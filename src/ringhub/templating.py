@@ -10,10 +10,11 @@ import re
 from datetime import timedelta
 from typing import Any
 
-from jinja2 import StrictUndefined, TemplateError
+from jinja2 import StrictUndefined, TemplateError, Undefined
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 _env = ImmutableSandboxedEnvironment(undefined=StrictUndefined, autoescape=False)
+_SINGLE_EXPR_RE = re.compile(r"^\{\{(?P<expr>(?:(?!\}\}|\{\{|\{%).)*)\}\}$", re.DOTALL)
 _DURATION_RE = re.compile(r"(?:(\d+(?:\.\d+)?)\s*h)?\s*(?:(\d+(?:\.\d+)?)\s*m)?\s*(?:(\d+(?:\.\d+)?)\s*s)?")
 
 
@@ -32,11 +33,24 @@ def is_template(value: Any) -> bool:
 
 
 def render(value: Any, variables: dict[str, Any], *, skip_keys: frozenset[str] = frozenset()) -> Any:
-    """Recursively render templated strings. Keys in ``skip_keys`` (top level) are left raw."""
+    """Recursively render templated strings. Keys in ``skip_keys`` (top level) are left raw.
+
+    A string that is exactly one ``{{ expression }}`` evaluates to the expression's native
+    value; anything else (``"{{ n }}m"``, text with several tags) renders to a string.
+    """
     if isinstance(value, str):
         if not is_template(value):
             return value
         try:
+            single = _SINGLE_EXPR_RE.match(value.strip())
+            if single:
+                # A lone "{{ expr }}" keeps its native type (bool, int, list...) so that
+                # e.g. state.set value "{{ on == 'on' }}" stores a real boolean. Values from
+                # variables are returned as-is, never re-parsed, so transcripts stay strings.
+                result = _env.compile_expression(single.group("expr"), undefined_to_none=False)(variables)
+                if isinstance(result, Undefined):
+                    str(result)  # StrictUndefined raises with a helpful message
+                return result
             return _env.from_string(value).render(variables)
         except TemplateError as e:
             raise TemplateRenderError(f"template {value!r}: {e}") from None

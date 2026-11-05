@@ -46,6 +46,12 @@ def _services(request: Request) -> Services:
 Svc = Annotated[Services, Depends(_services)]
 
 
+class SimulateBody(BaseModel):
+    gesture: GestureField
+    transcript: str | None = None
+    payload: Any = None
+
+
 def _ms_to_dt(ms: Any, fallback: datetime) -> datetime:
     try:
         return datetime.fromtimestamp(int(ms) / 1000, UTC)
@@ -169,11 +175,6 @@ def create_app(config: Config) -> FastAPI:
             raise HTTPException(401, "bad admin token")
 
     admin = [Depends(require_admin)]
-
-    class SimulateBody(BaseModel):
-        gesture: GestureField
-        transcript: str | None = None
-        payload: Any = None
 
     @app.post("/api/simulate", dependencies=admin)
     async def simulate(body: SimulateBody, svc: Svc) -> dict[str, Any]:

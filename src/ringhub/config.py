@@ -58,6 +58,10 @@ def _gesture(v: Any) -> Gesture:
     return v if isinstance(v, Gesture) else parse_gesture(str(v))
 
 
+def _blank_to_none(v: Any) -> Any:
+    return None if isinstance(v, str) and not v.strip() else v
+
+
 def _as_list(v: Any) -> Any:
     return v if v is None or isinstance(v, list) else [v]
 
@@ -65,6 +69,8 @@ def _as_list(v: Any) -> Any:
 GestureField = Annotated[Gesture, BeforeValidator(_gesture)]
 GestureList = Annotated[list[GestureField], BeforeValidator(_as_list)]
 StrList = Annotated[list[str], BeforeValidator(_as_list)]
+OptionalSecret = Annotated[SecretStr | None, BeforeValidator(_blank_to_none)]
+"""``${TOKEN:-}`` in YAML yields "" when unset; treat that as not configured."""
 
 
 class _Strict(BaseModel):
@@ -79,7 +85,7 @@ class ServerConfig(_Strict):
     port: int = 8787
     webhook_path: str = "/ring"
     data_dir: Path = Path("./data")
-    admin_token: SecretStr | None = None
+    admin_token: OptionalSecret = None
     """Bearer token for /api/* (event log, simulate). Admin API is disabled when unset."""
 
 
@@ -131,7 +137,7 @@ class RingConfig(_Strict):
 class NtfyConfig(_Strict):
     url: str = "https://ntfy.sh"
     topic: str
-    token: SecretStr | None = None
+    token: OptionalSecret = None
 
 
 # --------------------------------------------------------------------------- devices

@@ -24,7 +24,8 @@ ActionFn = Callable[[Any, "Runtime", Vars], Awaitable[Vars | None]]
 
 
 class Params(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    # Native-typed templates can yield ints where text is expected ("{{ count }}").
+    model_config = ConfigDict(extra="forbid", coerce_numbers_to_str=True)
 
 
 class NoParams(Params):

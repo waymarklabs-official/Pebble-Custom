@@ -30,6 +30,13 @@ class RouteParams(Params):
     use_llm: bool = True
 
 
+async def _run_intent(rt: Runtime, name: str, steps: list[dict[str, Any]], v: Vars, depth: int) -> None:
+    try:
+        await rt.executor.run(steps, v, depth=depth)
+    except ActionError as e:
+        raise ActionError(f"intent {name!r}: {e}") from e
+
+
 @action("intent.route", RouteParams, steps=("fallback",))
 async def intent_route(p: RouteParams, rt: Runtime, v: Vars) -> Vars:
     text = p.text if p.text is not None else str(v.get("event", {}).get("transcript", ""))
@@ -41,7 +48,7 @@ async def intent_route(p: RouteParams, rt: Runtime, v: Vars) -> Vars:
     if match is not None:
         v.update(match.groups)
         v["intent"] = {"name": match.intent.name, "via": "pattern", "text": match.text}
-        await rt.executor.run(match.intent.do, v, depth=depth)
+        await _run_intent(rt, match.intent.name, match.intent.do, v, depth)
         return {}
 
     if p.use_llm and rt.llm is not None:
@@ -50,7 +57,7 @@ async def intent_route(p: RouteParams, rt: Runtime, v: Vars) -> Vars:
         if choice and intent:
             v.update(choice.slots)
             v["intent"] = {"name": intent.name, "via": "llm", "text": text}
-            await rt.executor.run(intent.do, v, depth=depth)
+            await _run_intent(rt, intent.name, intent.do, v, depth)
             return {}
 
     v["intent"] = {"name": None, "via": None, "text": text}

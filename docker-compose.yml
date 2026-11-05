@@ -1,0 +1,15 @@
+services:
+  ringhub:
+    build: .
+    image: ringhub:latest
+    restart: unless-stopped
+    env_file: .env                     # RINGHUB_SECRET, NTFY_TOKEN, RINGHUB_ADMIN_TOKEN, ...
+    ports:
+      - "127.0.0.1:8787:8787"          # expose through Tailscale Funnel / Caddy, not raw to the LAN
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./data:/app/data
+      - adb-keys:/home/ringhub/.android
+
+volumes:
+  adb-keys:

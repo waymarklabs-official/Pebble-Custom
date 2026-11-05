@@ -61,7 +61,7 @@ class HttpParams(Params):
     save_as: str | None = None
     """Store the response (parsed JSON if possible) in this variable for later steps."""
 
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, coerce_numbers_to_str=True)
 
 
 @action("http", HttpParams, primary="url")

@@ -68,7 +68,7 @@ def test_when_validation() -> None:
     ("Turn it off in half an hour", "turn it off in 30 minutes"),
     ("Remind me at 7:30, please!", "remind me at 7:30 please"),
     ("Volume up twenty", "volume up 20"),
-    ("I’m leaving", "i'm leaving"),
+    ("I’m leaving", "i'm leaving"),  # noqa: RUF001 - smart quote is the point
 ])
 def test_normalize(raw: str, expected: str) -> None:
     assert normalize(raw) == expected
