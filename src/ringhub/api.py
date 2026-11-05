@@ -14,17 +14,20 @@ import base64
 import hashlib
 import hmac
 import json
+import math
+import re
 import time
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, TypeGuard
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field, ValidationError
 
 from .catalog import BUILTIN_SKILLS, FALLBACK_MODE, CatalogError, Mode, Place, Skill, slugify
 from .config import Config, GestureField
+from .context import KEY_RE
 from .engine import Engine, label
 from .executor import StepError, validate_skill_steps
 from .models import RingEvent
@@ -58,20 +61,40 @@ Svc = Annotated[Services, Depends(_svc)]
 # ----------------------------------------------------------------------------- auth
 
 
-def _session_sig(secret: bytes, exp: int) -> str:
-    return hmac.new(secret, f"session\n{exp}".encode(), hashlib.sha256).hexdigest()
+SESSION_EPOCH_KEY = "session.epoch"
 
 
-def make_session(secret: bytes, now: float | None = None) -> str:
+def _session_key(secret: bytes, admin_token: str) -> bytes:
+    # Bound to the admin token: rotating the token signs every browser out.
+    return hmac.new(secret, b"session-key\n" + hashlib.sha256(admin_token.encode()).digest(), hashlib.sha256).digest()
+
+
+def _session_sig(key: bytes, exp: int, epoch: int) -> str:
+    return hmac.new(key, f"session\n{exp}\n{epoch}".encode(), hashlib.sha256).hexdigest()
+
+
+def make_session(secret: bytes, admin_token: str, epoch: int, now: float | None = None) -> str:
     exp = int((now or time.time()) + SESSION_TTL)
-    return f"{exp}.{_session_sig(secret, exp)}"
+    return f"{exp}.{epoch}.{_session_sig(_session_key(secret, admin_token), exp, epoch)}"
 
 
-def session_valid(secret: bytes, value: str, now: float | None = None) -> bool:
-    exp_s, _, sig = value.partition(".")
-    if not exp_s.isdigit() or int(exp_s) < (now or time.time()):
+def session_valid(secret: bytes, admin_token: str, epoch: int, value: str, now: float | None = None) -> bool:
+    parts = value.split(".")
+    if len(parts) != 3 or not all(p.isascii() and p.isdigit() for p in parts[:2]):
         return False
-    return hmac.compare_digest(_session_sig(secret, int(exp_s)), sig)
+    exp, cookie_epoch, sig = int(parts[0]), int(parts[1]), parts[2]
+    if exp < (now or time.time()) or cookie_epoch != epoch or not re.fullmatch(r"[0-9a-f]{64}", sig):
+        return False
+    return hmac.compare_digest(_session_sig(_session_key(secret, admin_token), exp, epoch).encode(), sig.encode())
+
+
+async def _cookie_ok(request: Request, svc: Services) -> bool:
+    cookie = request.cookies.get(SESSION_COOKIE)
+    token = svc.config.server.admin_token
+    if not cookie or token is None:
+        return False
+    epoch = int(await svc.store.get(SESSION_EPOCH_KEY, 0) or 0)
+    return session_valid(svc.secret, token.get_secret_value(), epoch, cookie)
 
 
 def _bearer(request: Request) -> str | None:
@@ -82,26 +105,25 @@ def _bearer(request: Request) -> str | None:
 def _token_ok(supplied: str | None, expected: Any) -> bool:
     if supplied is None or expected is None:
         return False
-    return hmac.compare_digest(supplied.encode(), expected.get_secret_value().encode())
+    return hmac.compare_digest(supplied.encode("utf-8", "surrogateescape"), expected.get_secret_value().encode())
 
 
-def require_admin(request: Request, svc: Svc) -> None:
+async def require_admin(request: Request, svc: Svc) -> None:
     if svc.config.server.admin_token is None:
         raise HTTPException(503, "dashboard disabled: set server.admin_token")
     if _token_ok(_bearer(request), svc.config.server.admin_token):
         return
-    cookie = request.cookies.get(SESSION_COOKIE)
-    if cookie and session_valid(svc.secret, cookie):
+    if await _cookie_ok(request, svc):
         if request.method not in ("GET", "HEAD") and request.headers.get("x-ringhub") != "1":
             raise HTTPException(403, "missing X-Ringhub header")
         return
     raise HTTPException(401, "not signed in")
 
 
-def require_context_writer(request: Request, svc: Svc) -> None:
+async def require_context_writer(request: Request, svc: Svc) -> None:
     if _token_ok(_bearer(request), svc.config.server.context_token):
         return
-    require_admin(request, svc)
+    await require_admin(request, svc)
 
 
 Admin = [Depends(require_admin)]
@@ -119,6 +141,10 @@ def _owntracks_auth(request: Request, svc: Services) -> bool:
     return _token_ok(_bearer(request), expected)
 
 
+def _finite(v: Any) -> TypeGuard[float]:
+    return isinstance(v, int | float) and not isinstance(v, bool) and math.isfinite(v)
+
+
 async def handle_owntracks(svc: Services, msg: dict[str, Any]) -> list[dict[str, Any]]:
     """Map OwnTracks messages onto context; reply with our places as waypoints when they change."""
     rt = svc.runtime
@@ -128,18 +154,24 @@ async def handle_owntracks(svc: Services, msg: dict[str, Any]) -> list[dict[str,
         for spoken in p.spoken():
             by_name[spoken] = p.id
     kind = msg.get("_type")
-    stamp = float(msg.get("tst") or time.time())
-    stamp = min(stamp, time.time())
+    now = time.time()
+    tst = msg.get("tst")
+    # Trust the device clock only within sane bounds; replayed transitions keep their real time.
+    stamp = float(tst) if _finite(tst) and now - 7 * 86400 <= float(tst) <= now + 300 else now
+    stamp = min(stamp, now)
     if kind == "transition":
-        place = by_name.get(str(msg.get("desc", "")).strip().lower())
+        place = by_name.get(str(msg.get("desc", ""))[:80].strip().lower())
         if place:
             if msg.get("event") == "enter":
                 await rt.context.arrive(place, source="owntracks", at=stamp)
             elif msg.get("event") == "leave":
                 await rt.context.leave(place, source="owntracks", at=stamp)
-    if kind in ("location", "transition") and isinstance(msg.get("lat"), int | float):
-        await rt.context.set("location", {"lat": msg["lat"], "lon": msg["lon"], "accuracy": msg.get("acc"),
-                                          "at": stamp}, source="owntracks", at=stamp)
+    lat, lon, acc = msg.get("lat"), msg.get("lon"), msg.get("acc")
+    if kind in ("location", "transition") and _finite(lat) and _finite(lon) \
+            and -90 <= float(lat) <= 90 and -180 <= float(lon) <= 180:
+        await rt.context.set("location", {"lat": float(lat), "lon": float(lon),
+                                          "accuracy": float(acc) if _finite(acc) else None, "at": stamp},
+                             source="owntracks", at=stamp)
     # Push our geofences to the phone whenever the place list changed (max 20: iOS limit).
     fenced = [p for p in places if p.lat is not None and p.lon is not None][:20]
     digest = hashlib.sha256(json.dumps([p.model_dump(mode="json") for p in fenced], sort_keys=True)
@@ -193,11 +225,14 @@ class NoteBody(BaseModel):
     text: str = Field(min_length=1, max_length=5000)
 
 
+RESERVED_CONTEXT = frozenset({"place", "place_since", "last_left", "last_visit", "focus", "location",
+                              "pending_leave", "stale_arrive"})
+
+
 def _place_slug(raw: str) -> str:
-    slug = slugify(raw)
-    if not slug:
-        raise HTTPException(400, "bad place")
-    return slug
+    if not re.search(r"[a-z0-9]", raw.lower()):
+        raise HTTPException(400, "bad place: use letters or digits (e.g. home, gym)")
+    return slugify(raw)
 
 
 def build_router(config: Config) -> APIRouter:
@@ -207,10 +242,21 @@ def build_router(config: Config) -> APIRouter:
 
     @r.post("/session")
     async def login(body: LoginBody, request: Request, response: Response, svc: Svc) -> dict[str, Any]:
-        if not _token_ok(body.token.strip(), svc.config.server.admin_token):
+        token = svc.config.server.admin_token
+        if token is None or not _token_ok(body.token.strip(), token):
             raise HTTPException(401, "wrong token")
-        response.set_cookie(SESSION_COOKIE, make_session(svc.secret), max_age=SESSION_TTL, httponly=True,
-                            samesite="strict", secure=request.url.scheme == "https", path="/")
+        epoch = int(await svc.store.get(SESSION_EPOCH_KEY, 0) or 0)
+        response.set_cookie(SESSION_COOKIE, make_session(svc.secret, token.get_secret_value(), epoch),
+                            max_age=SESSION_TTL, httponly=True, samesite="strict",
+                            secure=request.url.scheme == "https", path="/")
+        return {"ok": True}
+
+    @r.post("/session/revoke", dependencies=Admin)
+    async def revoke_sessions(response: Response, svc: Svc) -> dict[str, Any]:
+        """Sign out every browser (bumps the session epoch)."""
+        epoch = int(await svc.store.get(SESSION_EPOCH_KEY, 0) or 0) + 1
+        await svc.store.set(SESSION_EPOCH_KEY, epoch)
+        response.delete_cookie(SESSION_COOKIE, path="/")
         return {"ok": True}
 
     @r.delete("/session")
@@ -220,9 +266,7 @@ def build_router(config: Config) -> APIRouter:
 
     @r.get("/session")
     async def session(request: Request, svc: Svc) -> dict[str, Any]:
-        cookie = request.cookies.get(SESSION_COOKIE)
-        ok = bool(cookie and session_valid(svc.secret, cookie)) or _token_ok(_bearer(request),
-                                                                              svc.config.server.admin_token)
+        ok = await _cookie_ok(request, svc) or _token_ok(_bearer(request), svc.config.server.admin_token)
         return {"authenticated": ok, "enabled": svc.config.server.admin_token is not None}
 
     # ------------------------------------------------------------------ now
@@ -499,12 +543,15 @@ def build_router(config: Config) -> APIRouter:
                 raise HTTPException(422, "location needs lat/lon")
             await ctx.set("location", {"lat": lat, "lon": lon, "accuracy": body.location.get("accuracy"),
                                        "at": time.time()}, source=source)
-        for key, value in body.set.items():
-            if key in ("place", "place_since", "last_left", "focus", "location"):
-                raise HTTPException(422, f"use arrive/leave/focus/location for {key!r}")
-            if not key.replace("_", "").isalnum() or len(key) > 32:
-                raise HTTPException(422, f"bad context key {key!r}")
-            await ctx.set(key.lower(), value, source=source)
+        for raw_key, value in body.set.items():
+            key = raw_key.lower()  # normalize BEFORE checking, or "FOCUS" slips past the reserved list
+            if key in RESERVED_CONTEXT:
+                raise HTTPException(422, f"use arrive/leave/focus/location for {raw_key!r}")
+            if not re.fullmatch(KEY_RE, key):
+                raise HTTPException(422, f"bad context key {raw_key!r} (lowercase letters, digits, _)")
+            if len(json.dumps(value)) > 2000:
+                raise HTTPException(422, f"value for {raw_key!r} is too large")
+            await ctx.set(key, value, source=source)
         res = await svc.runtime.resolution()
         return {"ok": True, "mode": res.mode.id, "place": await ctx.get("place")}
 

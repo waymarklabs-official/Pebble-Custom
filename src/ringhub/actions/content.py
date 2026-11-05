@@ -11,6 +11,7 @@ import httpx
 
 from ..devices import DeviceError
 from .base import ActionError, Params, Vars, action
+from .core import safe_host
 
 if TYPE_CHECKING:
     from ..runtime import Runtime
@@ -89,7 +90,7 @@ async def media_play_latest(p: PlayLatestParams, rt: Runtime, v: Vars) -> Vars:
         resp.raise_for_status()
         data = resp.json()
     except (httpx.HTTPError, ValueError) as e:
-        raise ActionError(f"media source {p.source}: {e!r}") from None
+        raise ActionError(f"media source {p.source} ({safe_host(src.latest_url)}): {type(e).__name__}") from None
     try:
         url = str(dig(data, src.url_field))
     except (KeyError, IndexError):

@@ -22,6 +22,7 @@ from .actions.base import ActionError
 from .api import Services, build_router
 from .config import Config
 from .engine import Engine
+from .limits import BodyLimitMiddleware
 from .models import Gesture, RingEvent
 from .runtime import Runtime
 from .seed import seed_if_empty
@@ -31,6 +32,8 @@ from .webhook import WebhookError, authenticate, is_test_delivery, parse_button_
 log = logging.getLogger(__name__)
 
 WEB_DIR = Path(__file__).parent / "web"
+API_BODY_LIMIT = 1024 * 1024
+"""Dashboard/API/context bodies are small; the catalog import is the largest (~tens of KB)."""
 LINK_SECRET_KEY = "secret.links"  # noqa: S105 - a state-table key name, not a secret
 
 
@@ -127,10 +130,9 @@ def create_app(config: Config) -> FastAPI:
         return JSONResponse({"error": exc.detail}, status_code=exc.status)
 
     @app.get("/healthz")
-    async def healthz(request: Request) -> dict[str, Any]:
-        svc: Services = request.app.state.services
-        res = await svc.runtime.resolution()
-        return {"ok": True, "version": __version__, "mode": res.mode.id}
+    async def healthz() -> dict[str, Any]:
+        # Deliberately says nothing about the owner: the active mode reveals home/away/asleep.
+        return {"ok": True, "version": __version__}
 
     @app.post(config.server.webhook_path)
     async def ring_webhook(request: Request) -> dict[str, Any]:
@@ -188,6 +190,8 @@ def create_app(config: Config) -> FastAPI:
         return JSONResponse({"ok": True, "status": r.status})
 
     app.include_router(build_router(config))
+    app.add_middleware(BodyLimitMiddleware, default=API_BODY_LIMIT,
+                       overrides={config.server.webhook_path: config.ring.max_body_bytes})
 
     # ------------------------------------------------------------------ dashboard
 

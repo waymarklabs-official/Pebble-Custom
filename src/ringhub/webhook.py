@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import re
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -119,11 +120,13 @@ def authenticate(
         provided = _header(headers, H_SIGNATURE).lower()
         if not provided:
             raise WebhookError(401, "missing X-Index-Signature")
+        if not re.fullmatch(r"[0-9a-f]{64}", provided):
+            raise WebhookError(401, "invalid signature")
         # Evaluate every candidate so timing does not reveal which secret matched.
         ok = False
         for secret in secrets:
             expected = sign(secret, version, ts, delivery_id, trigger, is_test, body)
-            ok |= hmac.compare_digest(expected, provided)
+            ok |= hmac.compare_digest(expected.encode(), provided.encode())
         if not ok:
             raise WebhookError(401, "invalid signature")
 

@@ -71,11 +71,14 @@ async def http(p: HttpParams, rt: Runtime, v: Vars) -> Vars | None:
         kwargs["json"] = p.json_body
     elif p.body is not None:
         kwargs["content"] = p.body.encode()
+    host = safe_host(p.url)
     try:
         resp = await rt.http.request(p.method, p.url, **kwargs)
-        resp.raise_for_status()
     except httpx.HTTPError as e:
-        raise ActionError(f"http {p.method} {p.url}: {e!r}") from None
+        # Never echo the URL: webhook URLs often embed keys (IFTTT, Home Assistant webhook ids).
+        raise ActionError(f"{p.method} {host}: {type(e).__name__}") from None
+    if resp.is_error:
+        raise ActionError(f"{p.method} {host}: HTTP {resp.status_code}")
     if not p.save_as:
         return None
     try:
@@ -83,6 +86,14 @@ async def http(p: HttpParams, rt: Runtime, v: Vars) -> Vars | None:
     except ValueError:
         data = resp.text
     return {p.save_as: data}
+
+
+def safe_host(url: str) -> str:
+    """Scheme-less host for error messages: no path, query or credentials (they may be secrets)."""
+    try:
+        return httpx.URL(url).host or "?"
+    except (httpx.InvalidURL, ValueError, TypeError):
+        return "?"
 
 
 # ---------------------------------------------------------------------------- flow

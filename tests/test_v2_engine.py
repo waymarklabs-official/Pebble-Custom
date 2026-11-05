@@ -156,7 +156,7 @@ async def test_skill_failure_pushes_an_error_and_logs_it(rt: Runtime, engine: En
     await edit_mode(rt, "everywhere", bindings={**(await rt.catalog.mode("everywhere")).bindings,  # type: ignore[union-attr]
                                                 "click": "garage"})
     outcome = await engine.handle(ring_event("click", delivery="d-fail"))
-    assert outcome.startswith("error: 🚪 Garage door: http POST https://hook.test/fail")
+    assert outcome == "error: 🚪 Garage door: POST hook.test: HTTP 500"  # host only: URLs may hold keys
     (push,) = ntfy.bodies  # no success confirmation
     assert push["title"] == "⚠️ click failed" and push["priority"] == 3 and push["tags"] == ["warning"]
     assert "Garage door" in push["message"] and "500" in push["message"]

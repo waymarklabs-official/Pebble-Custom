@@ -268,9 +268,6 @@ async def test_reorder_must_list_every_id(catalog: Catalog) -> None:
     assert [m.id for m in await catalog.modes()] == ["c", "a", "b"]  # untouched by failed attempts
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG: Catalog.reorder compares set(order) with the existing ids, so a list with duplicates "
-    "(['a','a','b','c']) passes the 'every existing id exactly once' check it claims to enforce."))
 async def test_reorder_rejects_duplicates(catalog: Catalog) -> None:
     for mid in ("a", "b", "c"):
         await catalog.put(M(mid))
@@ -325,10 +322,6 @@ async def test_failed_import_inside_the_transaction_rolls_back(catalog: Catalog,
     assert await catalog.export() == before
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG: Catalog.replace_all (POST /catalog/import) accepts modes bound to skills that don't exist, which "
-    "PUT /modes rejects with 422; after such an import a bound gesture fails with 'skill ... no longer exists' "
-    "(for hold, the voice note is dropped). Validate binding targets (and built-in skills) before importing."))
 async def test_import_rejects_dangling_bindings(catalog: Catalog, make_config: Callable[..., Config]) -> None:
     await seed_if_empty(catalog, make_config())
     data = await catalog.export()

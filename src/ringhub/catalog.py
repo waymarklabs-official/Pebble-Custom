@@ -250,7 +250,7 @@ class Catalog:
 
         def op(db: sqlite3.Connection) -> None:
             existing = {r[0] for r in db.execute("SELECT id FROM catalog WHERE kind = ?", (kind,))}
-            if set(order) != existing:
+            if len(order) != len(set(order)) or set(order) != existing:
                 raise CatalogError("reorder must list every existing id exactly once")
             db.execute("BEGIN")
             try:
@@ -274,6 +274,19 @@ class Catalog:
         parsed = {kind: [models[kind].model_validate(d) for d in data.get(kind, [])] for kind in models}
         if not any(m.id == FALLBACK_MODE for m in parsed["mode"]):
             raise CatalogError("an import must contain the 'everywhere' mode")
+        for kind, docs in parsed.items():
+            ids = [d.id for d in docs]
+            dupes = sorted({i for i in ids if ids.count(i) > 1})
+            if dupes:
+                raise CatalogError(f"duplicate {kind} ids: {', '.join(dupes)}")
+        skill_ids = {s.id for s in parsed["skill"]}
+        missing_builtins = [b for b in BUILTIN_SKILLS if b not in skill_ids]
+        if missing_builtins:
+            raise CatalogError(f"an import must keep the built-in skills: {', '.join(missing_builtins)}")
+        for mode in parsed["mode"]:
+            dangling = sorted(set(mode.bindings.values()) - skill_ids)  # type: ignore[attr-defined]
+            if dangling:
+                raise CatalogError(f"mode {mode.id!r} uses unknown skills: {', '.join(dangling)}")
         now = time.time()
 
         def op(db: sqlite3.Connection) -> None:

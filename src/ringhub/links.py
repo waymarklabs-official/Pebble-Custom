@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import re
 import time
 from urllib.parse import urlencode
 
@@ -31,10 +32,9 @@ class LinkSigner:
         return f"{self.public_url}{path}?{urlencode({'exp': exp, 'sig': self._sig(path, exp)})}"
 
     def verify(self, path: str, exp: str, sig: str, now: float | None = None) -> bool:
-        try:
-            exp_i = int(exp)
-        except ValueError:
+        if not (exp.isascii() and exp.isdigit()) or not re.fullmatch(r"[0-9a-f]{32}", sig):
             return False
+        exp_i = int(exp)
         if exp_i < (now if now is not None else time.time()):
             return False
-        return hmac.compare_digest(self._sig(path, exp_i), sig)
+        return hmac.compare_digest(self._sig(path, exp_i).encode(), sig.encode())

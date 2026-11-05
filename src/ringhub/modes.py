@@ -22,7 +22,7 @@ class Resolution:
 def _matches(when: ModeWhen, ctx: dict[str, Any], now: datetime) -> str | None:
     """Return a reason string if every condition holds, else None."""
     reasons: list[str] = []
-    place = ctx.get("place")
+    place = ctx.get("place") if isinstance(ctx.get("place"), str) else None
     if when.places:
         if place not in when.places:
             return None
@@ -30,7 +30,8 @@ def _matches(when: ModeWhen, ctx: dict[str, Any], now: datetime) -> str | None:
     if when.not_places and place in when.not_places:
         return None
     if when.focus:
-        focus = (ctx.get("focus") or "").lower()
+        raw_focus = ctx.get("focus")
+        focus = raw_focus.lower() if isinstance(raw_focus, str) else ""
         if focus not in when.focus:
             return None
         reasons.append(f"{focus} focus")
@@ -50,12 +51,12 @@ def _matches(when: ModeWhen, ctx: dict[str, Any], now: datetime) -> str | None:
         r = when.recently
         stamp: float | None = None
         if r.event == "leave":
-            last = ctx.get("last_left") or {}
-            if last.get("place") == r.place:
+            last = ctx.get("last_left")
+            if isinstance(last, dict) and last.get("place") == r.place:
                 stamp = last.get("at")
-        elif ctx.get("place") == r.place:
+        elif place == r.place:
             stamp = ctx.get("place_since")
-        if stamp is None or now.timestamp() - float(stamp) > r.within_minutes * 60:
+        if not isinstance(stamp, int | float) or now.timestamp() - float(stamp) > r.within_minutes * 60:
             return None
         reasons.append(f"{'left' if r.event == 'leave' else 'arrived at'} {r.place} recently")
     return ", ".join(reasons) or "always"

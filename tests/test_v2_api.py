@@ -14,7 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from ringhub import __version__
-from ringhub.api import SESSION_COOKIE, make_session
+from ringhub.api import SESSION_COOKIE, make_session, session_valid
 from ringhub.app import CSP, WEB_DIR
 from ringhub.config import Config
 
@@ -263,17 +263,29 @@ class TestSession:
 
     def test_tampered_and_expired_cookies_are_rejected(self, client: TestClient) -> None:
         secret = services(client).secret
-        client.cookies.set(SESSION_COOKIE, make_session(secret, now=time.time() - 31 * 86400))
+        client.cookies.set(SESSION_COOKIE, make_session(secret, ADMIN, 0, now=time.time() - 31 * 86400))
         assert client.get(f"{API}/now").status_code == 401
-        good = make_session(secret)
-        exp, sig = good.split(".")
-        client.cookies.set(SESSION_COOKIE, f"{int(exp) + 1000}.{sig}")
-        assert client.get(f"{API}/now").status_code == 401
-        client.cookies.set(SESSION_COOKIE, f"{exp}.{'0' * len(sig)}")
-        assert client.get(f"{API}/now").status_code == 401
-        client.cookies.set(SESSION_COOKIE, make_session(b"another-install-secret-0123456789abcdef"))
-        assert client.get(f"{API}/now").status_code == 401
+        good = make_session(secret, ADMIN, 0)
+        exp, epoch, sig = good.split(".")
+        for bad in (f"{int(exp) + 1000}.{epoch}.{sig}", f"{exp}.{epoch}.{'0' * len(sig)}", f"{exp}.1.{sig}",
+                    f"{exp}.{sig}",
+                    make_session(b"another-install-secret-0123456789abcdef", ADMIN, 0),
+                    make_session(secret, "a-different-admin-token", 0)):
+            client.cookies.set(SESSION_COOKIE, bad)
+            assert client.get(f"{API}/now").status_code == 401, bad
         client.cookies.set(SESSION_COOKIE, good)
+        assert client.get(f"{API}/now").status_code == 200
+        # Non-ASCII values (sendable by raw clients) are rejected, not a TypeError/500.
+        assert not session_valid(secret, ADMIN, 0, f"{exp}.{epoch}.é")
+        assert not session_valid(secret, ADMIN, 0, "٩٩٩٩٩٩٩٩٩٩.0." + sig)  # Unicode digits
+
+    def test_revoke_signs_out_every_browser(self, client: TestClient) -> None:
+        login(client)
+        stolen = client.cookies.get(SESSION_COOKIE)
+        assert client.post(f"{API}/session/revoke", headers={"X-Ringhub": "1"}).status_code == 200
+        client.cookies.set(SESSION_COOKIE, stolen)
+        assert client.get(f"{API}/now").status_code == 401
+        login(client)  # a fresh sign-in works under the new epoch
         assert client.get(f"{API}/now").status_code == 200
 
     def test_logout_clears_the_cookie(self, client: TestClient) -> None:
@@ -305,7 +317,7 @@ def test_dashboard_disabled_without_admin_token(make_client: Factory, make_confi
 
 def test_first_boot_seeds_the_catalog_and_healthz(make_client: Factory) -> None:
     c = make_client(seeded=False)  # an empty data dir, as on a fresh install
-    assert c.get("/healthz").json() == {"ok": True, "version": __version__, "mode": "everywhere"}
+    assert c.get("/healthz").json() == {"ok": True, "version": __version__}  # no presence leak
     assert {p["id"] for p in c.get(f"{API}/places", headers=ADMIN_H).json()} == {"home", "work", "car"}
     assert c.get(f"{API}/modes", headers=ADMIN_H).json()[-1]["id"] == "everywhere"
 
@@ -448,11 +460,11 @@ def test_mode_order_keeps_everywhere_last(client: TestClient) -> None:
 def test_mode_order_changes_resolution(client: TestClient) -> None:
     client.post(f"{API}/context/arrive/home", headers=CONTEXT_H)
     client.post(f"{API}/context/focus/sleep", headers=CONTEXT_H)
-    assert client.get("/healthz").json()["mode"] == "sleep"
+    assert client.get(f"{API}/now", headers=ADMIN_H).json()["mode"]["id"] == "sleep"
     ids = [m["id"] for m in client.get(f"{API}/modes", headers=ADMIN_H).json()]
     reordered = [i for i in ids if i not in ("home", "everywhere")]
     client.post(f"{API}/modes/order", json={"ids": ["home", *reordered]}, headers=ADMIN_H)
-    assert client.get("/healthz").json()["mode"] == "home"
+    assert client.get(f"{API}/now", headers=ADMIN_H).json()["mode"]["id"] == "home"
 
 
 # ----------------------------------------------------------------------------- mode order, import / export
@@ -477,10 +489,6 @@ def test_import_without_everywhere_is_rejected_atomically(client: TestClient) ->
     assert client.get(f"{API}/catalog/export", headers=ADMIN_H).json() == exported
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG: POST /catalog/import with two docs sharing an id (e.g. a place listed twice) raises "
-    "sqlite3.IntegrityError inside Catalog.replace_all; api.import_ only catches ValidationError/CatalogError, "
-    "so the dashboard gets a 500 instead of a 422. (The transaction does roll back.)"))
 def test_import_with_duplicate_ids_is_a_422(make_client: Factory) -> None:
     c = make_client(raise_server_exceptions=False)
     exported = c.get(f"{API}/catalog/export", headers=ADMIN_H).json()
@@ -654,9 +662,6 @@ def test_path_places_are_slugified(client: TestClient) -> None:
     assert client.post(f"{API}/context/arrive/Grandma's House", headers=CONTEXT_H).json()["place"] == "grandma_s_house"
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG: api._place_slug never rejects anything: slugify() returns 'item' for input with no [a-z0-9], so "
-    "POST /context/arrive/🏠 (or '!!!') silently sets place='item' instead of the intended 400 'bad place'."))
 def test_unusable_place_names_are_rejected(client: TestClient) -> None:
     assert client.post(f"{API}/context/arrive/🏠", headers=CONTEXT_H).status_code == 400
 
@@ -674,14 +679,13 @@ def test_post_context_body(client: TestClient) -> None:
     assert "guests" not in ctx_now(client)
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG: api._apply_context checks reserved keys before lowercasing, so {'set': {'Place': 'home'}} passes the "
-    "check and then ctx.set('place', ...) overwrites the reserved key (bypassing arrive/leave debounce, "
-    "place_since and place reminders). Lowercase first, or validate against context.KEY_RE."))
 def test_reserved_keys_cannot_be_set_with_other_casing(client: TestClient) -> None:
-    r = client.post(f"{API}/context", json={"set": {"Place": "home"}}, headers=CONTEXT_H)
-    assert r.status_code == 422
+    for key, value in (("Place", "home"), ("FOCUS", 5), ("LAST_LEFT", "x"), ("Pending_Leave", {})):
+        r = client.post(f"{API}/context", json={"set": {key: value}}, headers=CONTEXT_H)
+        assert r.status_code == 422, key
     assert ctx_now(client)["place"] is None
+    # and the ring keeps working
+    assert client.get(f"{API}/now", headers=ADMIN_H).status_code == 200
 
 
 # ----------------------------------------------------------------------------- OwnTracks
@@ -751,10 +755,6 @@ def test_owntracks_set_waypoints_once_until_places_change(client: TestClient) ->
     assert ctx_now(client)["place"] == "home"
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG: api.handle_owntracks reads msg['lon'] unguarded (KeyError when only 'lat' is present) and "
-    "float(msg['tst']) on any value (ValueError for a non-numeric tst): malformed messages give a 500 "
-    "instead of being ignored or rejected with 400."))
 def test_owntracks_malformed_messages_are_not_500(make_client: Factory) -> None:
     c = make_client(raise_server_exceptions=False)
     assert c.post(f"{API}/owntracks", json={"_type": "location", "lat": 1.0}, headers=CONTEXT_H).status_code < 500

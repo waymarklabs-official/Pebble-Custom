@@ -30,7 +30,13 @@ export async function render(root, { params, go, refresh }) {
     timeline(ctx, places),
     activity(events),
     backup(refresh),
-    h('section', { class: 'card' }, h('button', { type: 'button', class: 'btn ghost', onClick: logout }, 'Sign out')),
+    h('section', { class: 'card' },
+      h('div', { class: 'inline-form wrap' },
+        h('button', { type: 'button', class: 'btn ghost', onClick: logout }, 'Sign out'),
+        confirmButton('Sign out everywhere', 'Tap again — all browsers', async () => {
+          try { await post('/session/revoke'); toast('Signed out on every device'); location.reload(); } catch (e) { toast(e.message, 'error'); }
+        }, 'btn ghost')),
+      h('p', { class: 'muted small' }, 'Changing server.admin_token in config also signs every browser out.')),
   );
   return undefined;
 }
