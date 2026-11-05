@@ -1,122 +1,161 @@
 # Setup
 
-The target is a small always-on Linux box: a Pi 4/5, a thin client, or a container on your home
-server. ringhub is a single asyncio process with SQLite and does no work between button presses.
+Five steps, about 30 minutes. At the end you have a ring that captures and recalls notes,
+reminds you by time and place, and changes what its button does as you move through the day.
 
-## 1. Install
+1. [Run the hub](#1-run-the-hub)
+2. [Make it reachable from your phone](#2-make-it-reachable-from-your-phone)
+3. [Point the ring at it](#3-point-the-ring-at-it)
+4. [Tell it where you are (iOS Shortcuts or OwnTracks)](#4-tell-it-where-you-are)
+5. [Optional: Tesla, voice fallback, TVs](#5-optional-integrations)
 
-**Docker (recommended):**
+## 1. Run the hub
+
+Any small always-on Linux box works: a Pi 4/5, a thin client, or a container on a home server.
 
 ```bash
 cp config.example.yaml config.yaml
-cp .env.example .env            # fill in RINGHUB_SECRET=$(ringhub secret) etc.
-docker compose up -d --build
-docker compose logs -f
+cp .env.example .env
+for v in RINGHUB_SECRET RINGHUB_ADMIN_TOKEN RINGHUB_CONTEXT_TOKEN; do
+  echo "$v=$(docker run --rm ringhub:latest secret 2>/dev/null || ringhub secret)" >> .env
+done
+$EDITOR .env      # NTFY_TOPIC, RINGHUB_PUBLIC_URL
+docker compose up -d --build        # or: pip install -e '.[llm]' && ringhub serve
 ```
 
-**Bare metal:** see the header of [`deploy/ringhub.service`](../deploy/ringhub.service).
+`ringhub check` prints what's on and what's missing. Open `http://<hub>:8787/` and sign in
+with `RINGHUB_ADMIN_TOKEN`. The **Now** page shows the active mode and what each gesture does.
 
-## 2. Make it reachable from your phone, anywhere
+Install the **ntfy** app on your iPhone and subscribe to `NTFY_TOPIC`. This is how the ring
+talks back. The Pebble watch mirrors these notifications automatically. Allow Time Sensitive
+notifications for ntfy so reminders can break through a Focus.
 
-The ring talks to your phone, and your phone POSTs to the hub. Your phone is not always on your
-LAN, so the hub needs an HTTPS URL that works from anywhere. The app retries failed deliveries
-every minute, up to 10 times.
+> Self-hosting ntfy? Set `upstream-base-url: "https://ntfy.sh"`, otherwise iOS delivers pushes
+> late, which defeats a memory aid. Also set `cache-file`.
 
-- **Tailscale (simplest, private):** install Tailscale on the hub and the phone, then
-  `tailscale serve --bg 8787` to get `https://<hub>.<tailnet>.ts.net/ring`. The URL is only
-  reachable from your own devices.
-- **Cloudflare Tunnel / Caddy with a domain:** works too. Keep request signing on, which it is by
-  default.
+## 2. Make it reachable from your phone
 
-## 3. Configure the Index app
+Your phone POSTs ring events and context to the hub from wherever you are, so the hub needs an
+HTTPS URL that works away from home.
 
-Index 01 Settings → **Webhook**. For **each** gesture (click, double-click, triple-click,
-hold & talk, double-click & hold):
+- **Tailscale (recommended, private):** install it on the hub and the phone, then run
+  `tailscale serve --bg 8787`. Put `https://<hub>.<tailnet>.ts.net` in `RINGHUB_PUBLIC_URL`.
+- Cloudflare Tunnel or Caddy with your own domain also work. Signing and the tokens protect
+  everything, but prefer not exposing the dashboard publicly.
 
-1. URL: `https://<your-hub>/ring`
-2. **Sign requests**: on, and paste `RINGHUB_SECRET`. You can use a different secret per gesture
-   by adding `ring.secrets.<gesture>` entries.
-3. Voice gestures: payload **Transcription only**, or **Both** if you want audio archived in
-   `data/audio/`.
-4. Click gestures: leave **payload** empty, or put a JSON or text tag in it and match on it with
-   `when: {payload: ...}`.
-5. **Send test event**. Expect a 200 in *Recent runs* and a "ringhub test OK" push.
+`public_url` also turns on the **Done / Snooze** buttons on reminder pushes. They carry signed,
+expiring links, never your admin token.
 
-Check that the hub saw it: `curl -H "Authorization: Bearer $RINGHUB_ADMIN_TOKEN" localhost:8787/api/events`.
+## 3. Point the ring at it
 
-> Button-event webhooks (click/double/triple) are in recent builds of the Core Devices app. If
-> your app only lists the two recording gestures, update it. Everything voice-driven works either
-> way, and modes can also be switched by voice ("tv mode").
+Index 01 app → **Settings → Webhook**. For each gesture (click, double-click, triple-click, hold
+& talk, double-click & hold):
 
-## 4. TVs
+1. URL: `https://<public_url>/ring`
+2. **Sign requests**: on, and paste `RINGHUB_SECRET`.
+3. For the two voice gestures, set the payload to **Transcription only**, or **Both** to keep the
+   audio.
+4. **Send test event** should produce a "ringhub test OK" push.
 
-**Android TV / Google TV / Shield / Fire TV (ADB):**
+Try it: hold and say *"remind me in two minutes to stretch"*. A confirmation arrives, then the
+reminder. When it arrives, click the ring to mark it done.
 
-1. Enable Developer options: Settings → About → click *Build* 7 times. On Fire TV it's
-   Settings → My Fire TV → About → click the device name 7 times.
-2. Turn on **USB/ADB debugging** (some models call it *Network debugging*).
-3. Give the TV a DHCP reservation and put its IP in `devices:`.
-4. Trigger any TV action once and accept **"Allow USB debugging? — Always allow"** on the TV.
-   The key is stored in the `adb-keys` volume (Docker) or `~/.android` (bare metal). Keep it, or
-   you'll have to approve every TV again.
+> Click, double and triple webhooks need a recent Index app. If you only see the two voice
+> gestures, update the app. Voice works either way.
 
-Useful package names for `tv.launch`: YouTube `com.google.android.youtube.tv`, Netflix
-`com.netflix.ninja`, Plex `com.plexapp.android`, Kodi `org.xbmc.kodi`, VLC `org.videolan.vlc`.
-To find any app's package name, open it and run `adb shell dumpsys window | grep mCurrentFocus`.
+## 4. Tell it where you are
 
-**Roku (ECP):**
+The dashboard's **Places & phone** page generates every URL below with copy buttons. Create your
+places there first (Home, Work and Car exist by default). The aliases are what you'd *say*
+("the office").
 
-1. Settings → System → Advanced system settings → **Control by mobile apps** → *Network access*:
-   **Permissive**. Roku OS 13+ blocks ECP by default; a 403 in the logs means this setting is off.
-2. For `tv.open_url` / `media.play_latest`, install the free **Media Assistant** channel
-   (id 782875). ringhub launches it with the media URL.
-3. `power_on` from deep sleep needs *Fast TV start* enabled on Roku TVs.
+### Option A: iOS Shortcuts automations (no extra app)
 
-## 5. Your Pi downloader
+Shortcuts app → **Automation** → **+** → pick a trigger → **Run Immediately** → add **Get
+Contents of URL**:
 
-`media.play_latest` needs one endpoint that returns the newest item as JSON, for example:
+- URL: shown on the Places page, for example `https://<public_url>/api/v1/context/arrive/home`
+- Method: **POST**
+- Headers: `Authorization` = `Bearer <RINGHUB_CONTEXT_TOKEN>`
 
-```json
-{"url": "http://pi.local:8000/media/2026-11-05-some-video.mp4", "title": "Some video"}
-```
+| Trigger | URL | Notes |
+|---|---|---|
+| Arrive at Home | `/api/v1/context/arrive/home` | iOS shows a "Running your automation" banner for location triggers. |
+| Leave Home | `/api/v1/context/leave/home` | Starts **Heading out** mode for 10 minutes. |
+| Arrive/Leave Work | `/api/v1/context/arrive/work`, `/leave/work` | |
+| Bluetooth: car connects | `/api/v1/context/arrive/car` | Switches to **In the car** (quiet feedback). |
+| Bluetooth: car disconnects | `/api/v1/context/leave/car` | **Saves where you parked**, so "where did I park?" works. |
+| Focus: Sleep turns on | `/api/v1/context/focus/sleep` | Runs silently. Turning off → `/api/v1/context/focus/off`. |
+| Focus: Work turns on | `/api/v1/context/focus/work` | Use as a mode condition. |
+| NFC tag (by the door) | `/api/v1/context/visit/home` | Silent. Good for "before I leave" checks. |
+| Wallet: tap at a store | `/api/v1/context/visit/<store>` | "Next time I'm at Target buy batteries" fires when you pay at Target. |
 
-Adjust `url_field` / `title_field` (dotted paths such as `items.0.url`) to match what your app
-already returns. If you only have a static file server, a 10-line handler that sorts by mtime
-does the job.
+What to expect:
+- **Precision.** iOS geofences trigger about 200 m past the edge and are unreliable below a 100 m
+  radius. The hub ignores a "leave" that comes within 4 minutes of "arrive" (jitter) and
+  collapses duplicate arrivals.
+- **Silence.** Focus, NFC, CarPlay, Alarm and Sleep automations run silently. Arrive/Leave,
+  Wi-Fi and Bluetooth always show a banner.
+- **Late reports.** If a leave is missed (battery, no signal), the next arrival elsewhere fixes
+  the state. Pending "when I get home" reminders still fire on the next arrival home.
 
-## 6. Tesla (optional)
+### Option B: OwnTracks (silent, continuous)
 
-Model Y needs **signed** commands:
+OwnTracks reports transitions silently and keeps working in the background.
 
-1. Register a Fleet API app at developer.tesla.com and complete the partner and virtual-key
-   steps (pair the key via `https://tesla.com/_ak/<your-domain>`).
-2. Run Tesla's [`tesla-http-proxy`](https://github.com/teslamotors/vehicle-command) next to
-   ringhub. It signs commands with your key.
-3. Fill in the `tesla:` section and point `base_url` at the proxy. ringhub refreshes the access
-   token and persists each rotated refresh token in its state store.
+1. Install OwnTracks → Settings → Mode **HTTP**.
+2. URL `https://<public_url>/api/v1/owntracks`, Authentication on, username anything,
+   password `RINGHUB_CONTEXT_TOKEN`.
+3. Give your places latitude/longitude on the Places page. The hub sends them to OwnTracks as
+   regions automatically (at most 20, the iOS limit), and OwnTracks enter/leave events become
+   arrive/leave.
 
-Command names are the standard Fleet API ones, for example `auto_conditioning_start`,
-`actuate_trunk` (`which_trunk: front|rear`), `door_lock`, `door_unlock`, `flash_lights`,
-`honk_horn` and `charge_port_door_open`.
+You can combine both options: OwnTracks for places, Shortcuts for Focus, the car and NFC.
 
-## 7. Voice fallback with Claude (optional)
+## 5. Optional integrations
+
+### Tesla: the "Car: trunk or climate" skill
+
+With Phone Key and walk-up unlock, a Model Y unlocks as you walk up and locks as you walk
+away, so **unlocked ≈ you're at the car**. One button then means "open the trunk" at the car and
+"warm it up" anywhere else.
+
+1. Create a Fleet API app at developer.tesla.com with scopes `vehicle_device_data`,
+   `vehicle_cmds` and `vehicle_location` (for parking memory), and pair the virtual key.
+2. Run Tesla's [`tesla-http-proxy`](https://github.com/teslamotors/vehicle-command). A Model Y
+   needs signed commands. State reads stay plain REST and go to `read_url`.
+3. Fill in the `tesla:` section. The hub refreshes tokens and stores each rotated refresh token.
+
+Cost and battery: reading state on a press costs one free online check plus one data call
+(about $0.002) only if the car is awake. A sleeping car is never woken just to read; it's treated
+as locked and away. Commands cost about $0.001, and a wake (needed to precondition a sleeping
+car) about $0.02. Nothing polls in the background. If your phone's last reported position is
+more than 150 m from the car, the hub refuses to open the trunk even if the car reports unlocked.
+
+### Voice fallback (Claude)
 
 ```yaml
 llm:
   api_key: ${ANTHROPIC_API_KEY}
 ```
 
-When no regex matches, the transcript and your intent catalog (names, `description`s and slot
-names) go to Claude, which either picks one intent and fills its slots or answers "none". It only
-runs after the regexes miss, so most commands never leave the box. Add `description:` to the
-intents you want it to choose reliably.
+The built-in parser handles "in 20 minutes", "at 7", "tomorrow morning", "on Friday", "when I
+get home/to work", "when I leave…" and "next time I'm at…". With `llm` set, sentences it doesn't
+recognize as reminders go to Claude, which either extracts what/when/where into a fixed schema
+or says it's just a note. It can't trigger anything else.
+
+### TVs
+
+Android/Fire TV (ADB) and Roku (ECP) still work as a **TV remote** skill template. See
+`config.example.yaml` → `devices`.
 
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| App shows `401` | Secret mismatch, or the phone/hub clocks are more than 5 min apart. The response body says which. |
-| App shows `400 unsupported webhook version` | Very old app build. Update it. |
-| Push "Ring click failed: … cannot connect" | TV asleep with network standby off, the IP changed, or ADB debugging was reset by a TV update. |
-| Click does nothing, no push | Check `/api/events`: `unmatched` means no rule exists for that gesture in the current mode. |
-| Combo fires as two separate gestures | You were slower than `combo_window_ms`. Raise it to 800–900. |
+| Ring app shows `401` | Secret mismatch, or the phone and hub clocks are more than 5 min apart. The response body says which. |
+| Shortcut automation gets `401` | Header must be exactly `Authorization: Bearer <context token>`. |
+| No pushes at all | Check `ntfy.topic` and that the app is subscribed. `ringhub check` shows the config. |
+| Reminder buttons do nothing | Set `server.public_url`. The phone must reach that URL. iOS opens the ntfy app first. |
+| Mode didn't change on arrival | **Places & phone → Timeline** shows what the phone reported, and when. |
+| "I don't know 'gym' yet" | Add a place called Gym, or add "gym" as an alias to an existing place. |

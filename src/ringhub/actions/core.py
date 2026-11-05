@@ -29,8 +29,8 @@ class NotifyParams(Params):
     priority: int | None = Field(None, ge=1, le=5)
     tags: list[str] | None = None
     click: str | None = None
-    actions: str | None = None
-    """Raw ntfy 'Actions' header, e.g. 'http, Undo, https://hub/api/simulate/...'."""
+    actions: list[dict[str, Any]] | None = Field(None, max_length=3)
+    """ntfy action objects, e.g. [{"action": "view", "label": "Open", "url": "https://..."}]."""
 
 
 @action("notify", NotifyParams, primary="message")

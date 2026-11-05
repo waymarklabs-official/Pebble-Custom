@@ -31,7 +31,8 @@ def _cmd_check(args: argparse.Namespace) -> int:
     print(f"    feedback: {'ntfy ' + cfg.ntfy.topic if cfg.ntfy else 'none (failures are only logged!)'}")
     print(f"    car: {'Tesla ' + cfg.tesla.vin[-6:] if cfg.tesla else 'not configured'}")
     print(f"    voice fallback LLM: {'on' if cfg.llm else 'off'}")
-    print(f"    digest: {cfg.memory.digest_time or 'off'} · markdown mirror: {cfg.memory.markdown_dir or 'off'}")
+    digest = cfg.memory.digest_time.strftime("%H:%M") if cfg.memory.digest_time else "off"
+    print(f"    digest: {digest} · markdown mirror: {cfg.memory.markdown_dir or 'off'}")
     return 0
 
 

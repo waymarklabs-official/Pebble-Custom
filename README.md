@@ -1,124 +1,97 @@
 # ringhub
 
-**Turn a Pebble Index 01 ring into a remote for your whole house.** One button and a mic on your
-finger become: per-room TV control, a sleep timer you set by talking, "play what my Pi just
-downloaded on the bedroom TV", car preconditioning timed to when you leave, a focus timer that
-counts your interruptions, a voice inbox that drops into Obsidian, and anything else you can
-reach over HTTP, ADB or a shell.
+**A memory aid you wear: your Pebble Index ring, made context-aware.**
+
+Hold the ring and talk. ringhub saves the thought, schedules the reminder, or answers the
+question, and knows where you were when you said it. Click it and it does the one obvious thing
+for where you are: log your meds in the morning, open the trunk when you're standing at the car,
+raise your hand at work. Build your own skills and modes in a dashboard on your phone.
 
 ```
- ring ──BLE──▶ Index app ──signed webhook──▶ ringhub ──▶ TVs (ADB / Roku ECP)
-                                               │  ├──▶ ntfy  (feedback on phone / watch / desktop)
-  5 gestures × modes × combos                  │  ├──▶ Pi media server, any HTTP API
-  + free-form voice → intents                  │  ├──▶ Tesla Fleet API
-                                               │  └──▶ Markdown notes, shell commands
-                                               └── SQLite: state, timers, dedup, event log
+ ring ─▶ Index app ─signed webhook─▶ ringhub ─▶ ntfy push (phone + Pebble watch)
+                                       ▲  │
+ iPhone Shortcuts / OwnTracks ─context─┘  ├─▶ notes · reminders · recall   (SQLite + full-text)
+ (arrive/leave, car BT, Focus, NFC, Wallet)├─▶ Tesla (state-aware, never wakes to look)
+                                          └─▶ anything with a webhook
 ```
 
-## Why this works better than it should
+## What it feels like
 
-- **The ring sends five gestures, not one.** The current Index app can POST `click`,
-  `double-click` and `triple-click` as instant JSON events, and `hold` / `double-click-and-hold`
-  as voice recordings with a transcript. ringhub implements that protocol from the app's open
-  source code, including the HMAC signing. ([protocol notes](docs/INDEX_WEBHOOK_PROTOCOL.md))
-- **Modes multiply them.** Triple-click cycles `home → tv → focus`; click means "hand raise" in
-  one mode, "play/pause" in another and "log an interruption" in a third. Each mode change sends
-  you a push explaining what the buttons now do.
-- **Combos add more.** `double` then `click` within 650 ms is its own gesture ("pause every
-  screen in the house"). Gestures that don't start a combo still fire instantly.
-- **"here" knows which room you're in.** TV commands default to the TV that's on, or the one you
-  used last, so one click does the obvious thing in every room.
-- **Voice is deterministic first.** Regex intents with spoken-number normalization ("forty-five" →
-  45) run offline and predictably. Optionally, Claude maps phrasing you didn't anticipate onto your
-  *existing* intents. It cannot invent actions.
-- **It never fails silently.** A screenless button that fails silently is useless, so every
-  failure pushes an ntfy alert naming the rule and the reason, and every event lands in a log you
-  can query.
-
-## Quick start
-
-```bash
-pip install -e '.[llm]'          # Python 3.11+; also: apt install adb (for Android/Fire TV)
-cp config.example.yaml config.yaml
-cp .env.example .env && echo "RINGHUB_SECRET=$(ringhub secret)" >> .env
-set -a; . ./.env; set +a
-ringhub check                    # validates every rule, step and template reference
-ringhub serve
-```
-
-Then, in the Index app: **Settings → Webhook**, configure each gesture with your hub's HTTPS URL,
-enable **Sign requests** with the same secret, choose **Transcription only** (or **Both** to keep
-audio) for the two voice gestures, and tap **Send test event**. You should get a "ringhub test OK"
-push. The full walkthrough, including how to reach the hub from anywhere (Tailscale), is in
-[docs/SETUP.md](docs/SETUP.md).
-
-Without the ring, you can send exactly what the app would:
-
-```bash
-ringhub send triple-click --secret "$RINGHUB_SECRET"
-ringhub send hold --transcript "sleep in 30 minutes" --secret "$RINGHUB_SECRET"
-```
-
-`ringhub send` is also how you plug **other buttons** (Stream Deck / Stream-Pi, a Flic, cron jobs,
-an NFC tag shortcut) into the same rules.
-
-## The recipes
-
-[docs/RECIPES.md](docs/RECIPES.md) is the playbook: what's in the example config, why it works,
-and the less obvious tricks. Highlights:
-
-| Gesture | Does |
+| You | ringhub |
 |---|---|
-| hold: *"sleep in 45"* | TV in this room powers off in 45 min. The timer survives reboots, and saying it again replaces it. |
-| hold: *"play the latest on the bedroom TV"* | Asks your Pi downloader for its newest file and plays it there: Android TV via a VIEW intent, Roku via Media Assistant. |
-| tv mode, double | **"What did they say?"** Rewinds a few seconds and turns subtitles on, then turns them off 20 s later. |
-| double → click | Pauses every TV in the house at once. |
-| hold: *"I'm leaving in 25"* | Car climate starts at T−10, and the house pauses when you walk out. |
-| hold: *"bookmark this"* | Logs the app on screen plus a timestamp to `bookmarks.md`. |
-| focus mode | Double starts a 25 min block. Click silently tallies interruptions, and the end-of-block push reports the count. |
-| click-hold | Raw journal entry with audio, no interpretation. |
-| anything unmatched | Lands as a checkbox in today's inbox note, so nothing you say is lost. |
+| *hold:* "the wifi password at the cabin is lakeside42" | 📝 Saved, filed under where you were. |
+| *hold:* "when I get home take the chicken out" | 📍 Fires the moment your phone says you're home. |
+| *hold:* "remind me at 7 to call mom" | ⏰ 7:00 pm. When it fires: **click** = done, **double** = snooze. |
+| *hold:* "what did I say about the cabin?" | 🔎 "the wifi password at the cabin is lakeside42 — Tue 3:12 pm" |
+| *hold:* "did I take my meds?" | ✅ "Yes — 'Took meds ✓' at 8:04 am" |
+| *hold:* "where did I park?" | 🚗 Saved automatically when the car's Bluetooth disconnected, with a Maps link. |
+| *click, at home before 10:30* | 💊 Took meds ✓ (Morning mode) |
+| *click, just left home* | 🚗 Unlocked and you're at it → trunk opens. Locked or asleep → climate on. |
+| *click, at work* | ✋ Hand raise to your ntfy topic. |
+| *triple* | 🧭 "Morning — at home, 05:00–10:30 · click: Took meds · double: What's on my list". Triple again to switch. |
+| *double, right after a mis-heard capture* | ↩️ Undone. |
 
-## Configuration model
+Nothing you say is ever dropped. If it isn't a command, question or reminder, it's a note.
 
-```yaml
-rules:                     # evaluated in order; first match wins unless `continue: true`
-  - name: tv play/pause
-    when: {gesture: click, mode: tv}          # also: sequence, time, days, state, payload, transcript
-    do: [{tv: play_pause}]                    # shorthand for {tv: {command: play_pause, target: here}}
-intents:
-  - name: sleep timer
-    match: ['sleep (?:in )?(?P<minutes>\d+)']
-    do:
-      - schedule: {id: sleep_timer, after: "{{ minutes }}m", do: [{tv: power_off}]}
-```
+## Ideas that make it seamless
 
-Actions: `notify`, `http`, `tv`, `tv.key`, `tv.launch`, `tv.open_url`, `tv.active_app`, `here.set`,
-`media.play_latest`, `notes.append`, `intent.route`, `mode.set`, `mode.cycle`, `state.set`,
-`state.toggle`, `state.increment`, `state.delete`, `schedule`, `schedule.cancel`, `wait`, `run`,
-`parallel`, `tesla`, `exec` (opt-in), `log`, `noop`. Each one is a small, typed function in
-`src/ringhub/actions/`, so adding your own is one decorator.
+- **The ring answers what just happened.** For 2 minutes after a reminder fires, click means
+  *done* and double means *snooze*, in any mode. Right after a capture, double means *undo*.
+- **Modes pick themselves.** Each mode says when it applies: places, iOS Focus, time window,
+  days, "within 10 min of leaving home", or any context value. The first match wins, and anything
+  a mode doesn't define falls through to *Everywhere*. Triple-click tells you where you are and
+  what the buttons do.
+- **Context is a timeline.** The ring can store a recording offline and deliver it later. It's
+  still filed under the place where you *said* it.
+- **Place reminders without geofences.** A Wallet tap or NFC tag counts as a *visit*, so "next
+  time I'm at Target…" fires when you pay there.
+- **The car's lock state is proximity.** With Phone Key, unlocked ≈ standing at the car. State is
+  read only on a press, never by waking the car, and trunk-opening is refused if your phone is
+  elsewhere.
+- **Pushes are designed for the wrist.** The useful text goes in the title, which is what the
+  Pebble watch shows. Priority follows iOS: confirmations are passive, reminders are Time
+  Sensitive.
 
-## Production notes
+## The dashboard
 
-- **Security:** HMAC-SHA256 on every request (version, timestamp, delivery id, trigger and raw
-  body), a ±5 min replay window, constant-time comparison, delivery-id dedup persisted for 7 days,
-  a 25 MB body cap, a sandboxed Jinja environment (transcripts are data, never templates), notes
-  writes confined to `notes_dir`, ADB arguments shell-quoted, `exec` off by default and run without
-  a shell, and the admin API off unless a token is set.
-- **Ordering:** events are processed one at a time in arrival order, so "switch mode, then click"
-  always sees the new mode. Long delays belong in `schedule` (persistent), not `wait` (capped at 60 s).
-- **Ops:** `GET /healthz`, plus `GET /api/events|state|jobs` and `POST /api/simulate` with a bearer
-  token. There's a Docker image (multi-arch base, non-root, tini), a hardened systemd unit, and CI
-  running ruff, `mypy --strict` and pytest on Python 3.11–3.13 plus a Docker build.
+Served by the hub at `/`. It's mobile-first, works offline on your LAN, and needs no build step
+or CDN.
 
-## Development
+- **Now**: active mode and why, what each gesture does right now, "try it" buttons, upcoming
+  reminders, recent captures, override.
+- **Modes**: drag to prioritize, write conditions in plain language, pick a skill per gesture.
+- **Skills**: create from templates (mark the moment, log something, push to a topic, webhook,
+  car, TV…) or write custom steps. Add voice phrases such as `tell {who} i'm running late`.
+- **Memory**: search every note, manage reminders.
+- **Places & phone**: places plus copy-ready iOS Shortcuts / OwnTracks setup with your URLs and
+  token.
+
+## Get started
 
 ```bash
-pip install -e '.[dev,llm]'
-ruff check src tests && mypy src && pytest -q
+pip install -e '.[llm]'            # Python 3.11+, or: docker compose up -d --build
+cp config.example.yaml config.yaml && cp .env.example .env    # fill in secrets
+ringhub check && ringhub serve
 ```
 
-Tests replay byte-exact copies of the app's requests through the real HTTP stack. They drive a
-fake `adb` binary and mocked Roku ECP, and run every recipe in `config.example.yaml` against fake
-TVs.
+Then follow [docs/SETUP.md](docs/SETUP.md): point the Index app's webhooks at the hub and add
+two or three Shortcuts automations (arrive/leave home, car Bluetooth). It takes about 30
+minutes. The [design doc](docs/DESIGN.md) explains the model, and
+[docs/RECIPES.md](docs/RECIPES.md) has ideas worth copying.
+
+## Under the hood
+
+- **Ring protocol:** a byte-exact implementation of the Index webhook v1, from the app's
+  open-source code. Every request is HMAC-signed, with a replay window, delivery dedup, and a
+  timeline for late deliveries. See [protocol notes](docs/INDEX_WEBHOOK_PROTOCOL.md).
+- **Memory:** SQLite with FTS5 (porter stemming). Notes record what, when said, where, mode,
+  audio and provenance. Reminders go pending → fired → done, with one nag if ignored for 15 min,
+  plus an evening digest and an optional Obsidian Markdown mirror.
+- **Reminder parser:** deterministic and offline, with 30+ phrasings tested. An optional Claude
+  fallback extracts only what, when and where into a fixed schema.
+- **Safety:**
+  - Admin, context and per-link credentials are separate.
+  - Dashboard sessions are HttpOnly, SameSite=Strict, with a CSRF header and a strict CSP.
+  - Transcripts are never templates, `exec` is off by default, and geofence input is debounced.
+- **Ops:** `ringhub check`, `/healthz`, an activity log, catalog export/import, Docker (non-root,
+  multi-arch), a hardened systemd unit, and CI running ruff, `mypy --strict` and pytest.

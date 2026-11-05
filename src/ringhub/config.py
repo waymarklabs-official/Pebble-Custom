@@ -100,9 +100,10 @@ class ServerConfig(_Strict):
             raise ValueError("tokens must be at least 16 characters (use `ringhub secret`)")
         return v
 
-    @field_validator("public_url")
+    @field_validator("public_url", mode="before")
     @classmethod
     def _url(cls, v: str | None) -> str | None:
+        v = _blank_to_none(v)
         if v is not None and not re.match(r"^https?://[^\s/]+", v):
             raise ValueError("public_url must look like https://host[:port]")
         return v.rstrip("/") if v else v
@@ -155,7 +156,9 @@ class RingConfig(_Strict):
 
 class NtfyConfig(_Strict):
     url: str = "https://ntfy.sh"
-    topic: str
+    topic: str = Field(pattern=r"^[A-Za-z0-9_-]{1,64}$")
+    reminders_topic: str | None = Field(None, pattern=r"^[A-Za-z0-9_-]{1,64}$")
+    """Optional separate topic for reminders, so they don't stack with confirmations."""
     token: OptionalSecret = None
 
 

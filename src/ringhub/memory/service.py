@@ -105,6 +105,12 @@ class Memory:
                       audio: str | None = None, source: str | None = None) -> CaptureResult:
         """Smart capture: question -> reminder -> note. (Skill phrases are tried by the caller.)"""
         text = transcript.strip()
+        if not text and audio:
+            # "Recording only" payload mode (or STT failed): keep the audio as a voice memo.
+            note = await self.rt.notes.add("(voice memo)", kind="note", created_at=said_at, place=place,
+                                           mode=mode, audio=audio, source=source)
+            await self.mirror(note)
+            return CaptureResult("note", "🎙️ Voice memo saved (no transcript)", note=note)
         if not text:
             return CaptureResult("empty", "🤔 I didn't catch anything — nothing saved.")
         answer = await self.answer(text)
@@ -146,7 +152,7 @@ class Memory:
                 message += f"\n(I don't know “{label}” yet — add it under Places, or say it differently.)"
         else:
             message = f"📋 On your list · {_clip(parsed.text)}"
-        await self.mirror(note)
+        await self.mirror(note, text=message.split("\n")[0].split(" ", 1)[1])
         await self.set_attention("capture", {"note": note.id, "reminder": reminder.id})
         return CaptureResult("reminder", message, note=note, reminder=reminder)
 
@@ -285,24 +291,27 @@ class Memory:
             await self.set_attention("reminder", r.id)
 
     async def _push_reminder(self, r: Reminder, *, nag: bool) -> None:
-        actions = []
+        actions: list[dict[str, Any]] = []
         for label, action in (("Done", "done"), ("Snooze 10m", "snooze")):
             url = self.rt.links.sign(f"/r/{r.id}/{action}")
             if url:
-                actions.append(f"http, {label}, {url}, method=POST, clear=true")
-        hint = "Click ring = done · double = snooze"
-        where = ""
+                actions.append({"action": "http", "label": label, "url": url, "method": "POST", "clear": True})
+        detail = "Ring: click = done · double = snooze"
         if r.trigger in ("arrive", "leave") and r.place:
-            where = f" ({'arrived at' if r.trigger == 'arrive' else 'left'} {await self.place_label(r.place)})"
+            verb = "Arrived at" if r.trigger == "arrive" else "Left"
+            detail = f"{verb} {await self.place_label(r.place)} · {detail}"
+        # The watch shows the title + first line: the reminder itself goes in the title.
         await self.rt.feedback.say(
-            f"{r.text}\n{hint}",
-            title=("⏰ Still pending" if nag else "⏰ Reminder") + where,
-            level="important", tags=["alarm_clock"], actions="; ".join(actions) or None,
+            detail, title=f"{'⏰ Still: ' if nag else '⏰ '}{_clip(r.text, 70)}", level="important",
+            tags=["alarm_clock"], actions=actions or None, kind="reminder", sequence_id=f"rem-{r.id}",
+            click=f"{self.rt.links.public_url}/#/memory" if self.rt.links.public_url else None,
         )
 
     async def done(self, rid: str) -> Reminder | None:
         r = await self.rt.reminders.mark_done(rid)
         await self._drop_jobs(rid)
+        if r is not None:
+            await self.rt.notifier.clear(f"rem-{rid}", self.rt.notifier.topic_for("reminder"))
         att = await self.rt.store.get(ATTENTION_KEY)
         if isinstance(att, dict) and att.get("ref") == rid:
             await self.clear_attention()
@@ -376,7 +385,7 @@ class Memory:
         await self.rt.feedback.say("\n".join(lines), title="🌙 Today", level="normal", tags=["crescent_moon"])
         await self.schedule_digest()
 
-    async def mirror(self, note: Note) -> None:
+    async def mirror(self, note: Note, *, text: str | None = None) -> None:
         """Append to a daily Markdown file (Obsidian/Logseq) when ``memory.markdown_dir`` is set."""
         base = self.rt.config.memory.markdown_dir
         if base is None:
@@ -386,7 +395,7 @@ class Memory:
         icons = {"note": "-", "journal": "- 📓", "moment": "- 📍", "log": "- ✔", "reminder": "- [ ] ⏰"}
         icon = icons.get(note.kind, "-")
         where = f" _({await self.place_label(note.place)})_" if note.place else ""
-        line = f"{icon} {dt:%H:%M} {note.text}{where}\n"
+        line = f"{icon} {dt:%H:%M} {text or note.text}{where}\n"
         path = base / f"{dt:%Y-%m-%d}.md"
 
         def write() -> None:

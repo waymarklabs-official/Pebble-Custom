@@ -1,206 +1,45 @@
-# ringhub example config — copy to config.yaml and edit.
+# ringhub config: infrastructure only.
 #
-# Gesture vocabulary (what the Index app can send):
-#   click | double-click | triple-click      -> instant JSON events   (aliases: single, double, triple)
-#   single-click-hold | double-click-hold    -> voice: audio + transcript (aliases: hold, click-hold)
-# ...multiplied by MODES (triple-click cycles them) and COMBOS (e.g. double then click within 650ms).
+# Skills, modes and places live in the dashboard (http://<hub>:8787/). On first boot the hub
+# writes a sensible default set you can change: Sleep, In the car, Work, Heading out, Morning,
+# Home and Everywhere.
 #
-# Every string can use ${ENV_VAR} or ${ENV_VAR:-default}. Steps can use Jinja templates:
-#   {{ event.transcript }} {{ event.gesture }} {{ mode }} {{ now.strftime('%H:%M') }} {{ state.water }}
-# plus named regex groups from intents and values returned by earlier steps ({{ count }}, {{ media.title }}).
+# Any value can reference an environment variable: ${NAME} or ${NAME:-fallback}.
 
-timezone: America/Chicago
+timezone: America/Chicago            # reminders and "tomorrow at 9" use this
 
 server:
   port: 8787
-  webhook_path: /ring
-  data_dir: ./data
-  admin_token: ${RINGHUB_ADMIN_TOKEN:-}     # enables /api/* (event log, simulate); unset = disabled
+  data_dir: ./data                   # SQLite (notes, reminders, catalog), audio, ADB keys
+  public_url: ${RINGHUB_PUBLIC_URL:-}  # how your phone reaches the hub, e.g. https://hub.tail1234.ts.net
+  admin_token: ${RINGHUB_ADMIN_TOKEN}  # dashboard login (`ringhub secret` makes one)
+  context_token: ${RINGHUB_CONTEXT_TOKEN}  # your phone's Shortcuts/OwnTracks use this; it can only report context
 
 ring:
   secrets:
-    default: ${RINGHUB_SECRET}               # `ringhub secret` generates one; paste into each gesture in the app
-  combo_window_ms: 650
-  keep_audio: true
+    default: ${RINGHUB_SECRET}       # paste the same secret into each gesture's webhook in the Index app
+  keep_audio: true                   # keep voice recordings (data/audio) when the app sends them
 
-ntfy:                                         # the hub's voice: confirmations + failure alerts
-  url: https://ntfy.sh                        # or your self-hosted ntfy
-  topic: ringhub-change-me-to-something-unguessable
+ntfy:                                # how the hub talks back: confirmations, answers, reminders
+  url: https://ntfy.sh               # or your own server (set upstream-base-url for timely iOS pushes)
+  topic: ${NTFY_TOPIC}               # pick something unguessable
   token: ${NTFY_TOKEN:-}
 
-devices:
-  living_tv:  {type: androidtv, host: 192.168.1.50, room: living}    # Google TV / Shield
-  office_tv:  {type: firetv,    host: 192.168.1.52, room: office}
-  bedroom_tv: {type: roku,      host: 192.168.1.60, room: bedroom}
-default_target: living                        # what "here" means when nothing is on and nothing is remembered
+memory:
+  ack_window_seconds: 120            # after a reminder fires: click = done, double = snooze
+  digest_time: "21:30"               # evening summary; remove to disable
+  # markdown_dir: /srv/obsidian/Ring # mirror every note into daily Markdown files
 
-media_sources:
-  pi:                                         # your link-downloader Pi: any endpoint returning the newest item as JSON
-    latest_url: http://pi.local:8000/api/latest
-    url_field: url                            # dotted path, e.g. items.0.stream_url
-    title_field: title
-
-notes_dir: ./data/notes                       # point at an Obsidian/Logseq vault synced with Syncthing
-
-# tesla:                                      # see docs/RECIPES.md#tesla for the one-time Fleet API setup
-#   base_url: https://localhost:4443
+# tesla:                             # enables the "Car: trunk or climate" skill (see docs/SETUP.md)
+#   base_url: https://localhost:4443 # Tesla's vehicle-command proxy (signs commands)
+#   read_url: https://fleet-api.prd.na.vn.cloud.tesla.com   # state reads go straight to Fleet API
 #   vin: ${TESLA_VIN}
 #   client_id: ${TESLA_CLIENT_ID}
 #   refresh_token: ${TESLA_REFRESH_TOKEN}
 #   ca_cert: ./tesla-proxy/tls-cert.pem
 
-# llm:                                        # optional: free-form voice -> one of YOUR intents below
+# llm:                               # optional: understands reminders the built-in parser misses
 #   api_key: ${ANTHROPIC_API_KEY}
 
-modes: [home, tv, focus]
-
-macros:
-  announce_mode:
-    - notify: {title: "Mode: {{ mode }}", message: "{{ {'home': 'click = hand raise, double = find phone', 'tv': 'click = play/pause, double = what did they say?', 'focus': 'click = log interruption, double = 25 min timer'}[mode] }}", tags: [ring]}
-
-  house_pause:                                # every screen in the house, at once
-    - parallel:
-        - tv: {command: pause, target: all}
-    - notify: {message: "Paused everything", tags: [pause_button], priority: 2}
-
-  what_did_they_say:                          # rewind + subtitles on for 20s, then off again
-    - tv: replay
-    - tv: {command: captions, target: here}
-    - schedule: {id: captions_off, after: 20s, do: [{tv: {command: captions, target: here}}]}
-
-rules:
-  # ---------------------------------------------------------------- always available
-  - name: cycle mode
-    when: {gesture: triple}
-    do: [mode.cycle, {run: announce_mode}]
-
-  - name: house pause (combo)
-    when: {sequence: [double, click]}
-    do: [{run: house_pause}]
-
-  - name: voice command
-    when: {gesture: hold}
-    do:
-      - intent.route:
-          fallback:                           # nothing matched -> never lose the thought
-            - notes.append:
-                file: "inbox/{{ now.strftime('%Y-%m-%d') }}.md"
-                ensure_header: "# Inbox {{ now.strftime('%A %d %B') }}"
-                text: "- [ ] {{ event.transcript }}  <!-- {{ now.strftime('%H:%M') }} -->"
-            - notify: {message: "Saved to inbox: {{ event.transcript }}", tags: [inbox_tray], priority: 2}
-
-  - name: raw capture
-    when: {gesture: click-hold}               # journaling: no interpretation, keeps the audio
-    do:
-      - notes.append:
-          file: "journal/{{ now.strftime('%Y-%m-%d') }}.md"
-          text: "**{{ now.strftime('%H:%M') }}** {{ event.transcript }}{% if event.audio_path %} ([audio](file://{{ event.audio_path }})){% endif %}"
-      - notify: {message: "Journaled", tags: [memo], priority: 1}
-
-  # ---------------------------------------------------------------- tv mode
-  - name: tv play/pause
-    when: {gesture: click, mode: tv}
-    do: [{tv: play_pause}]
-
-  - name: tv what did they say
-    when: {gesture: double, mode: tv}
-    do: [{run: what_did_they_say}]
-
-  # ---------------------------------------------------------------- focus mode
-  - name: log interruption
-    when: {gesture: click, mode: focus}
-    do: [{state.increment: interruptions}]    # silent on purpose; summarised when the timer ends
-
-  - name: focus timer
-    when: {gesture: double, mode: focus}
-    do:
-      - state.set: {key: interruptions, value: 0}
-      - schedule:
-          id: focus
-          after: 25m
-          do:
-            - notify: {title: "Focus block done", message: "{{ state.interruptions | default(0) }} interruptions logged. Stand up.", tags: [tomato], priority: 4}
-      - notify: {message: "25 min focus started", tags: [tomato], priority: 1}
-
-  # ---------------------------------------------------------------- home mode (default)
-  - name: hand raise
-    when: {gesture: click, mode: home}
-    do:
-      - notify: {topic: hand-raise, message: "✋ Hand raised at {{ now.strftime('%H:%M') }}", priority: 4}
-
-  - name: find my phone
-    when: {gesture: double, mode: home}       # priority 5 rings through Do Not Disturb if you allow ntfy to
-    do: [{notify: {message: "📱 Here I am!", priority: 5, tags: [rotating_light]}}]
-
-intents:
-  - name: sleep timer
-    description: Turn the TV in this room off after a number of minutes.
-    match: ['(?:sleep|turn (?:it|the tv) off|tv off) (?:timer )?(?:in |for )?(?P<minutes>\d+)']
-    do:
-      - schedule: {id: sleep_timer, after: "{{ minutes }}m", do: [{tv: {command: power_off, target: here}}]}
-      - notify: {message: "TV off in {{ minutes }} min", tags: [zzz], priority: 1}
-
-  - name: cancel sleep timer
-    match: ['cancel (?:the )?sleep']
-    do: [{schedule.cancel: sleep_timer}, {notify: "Sleep timer cancelled"}]
-
-  - name: play latest download
-    description: Play the newest video the Pi downloaded, optionally on a named room's TV.
-    match: ['play (?:the |my )?(?:latest|newest|last)(?: \w+)?(?: (?:on|in) (?:the )?(?P<room>living|office|bedroom)(?: room)?)?']
-    do:
-      - media.play_latest: {source: pi, target: "{{ room | default('here') }}"}
-      - notify: {message: "▶ {{ media.title }}", tags: [tv], priority: 1}
-
-  - name: bookmark moment
-    description: Remember what is on screen right now, with a timestamp, for later.
-    match: ['bookmark|remember this|what is this']
-    do:
-      - tv.active_app: here
-      - notes.append: {file: bookmarks.md, text: "- {{ now.strftime('%Y-%m-%d %H:%M') }} · {{ active_app or 'unknown app' }} · {{ event.transcript }}"}
-      - notify: {message: "Bookmarked ({{ active_app }})", priority: 1}
-
-  - name: remind me
-    description: A reminder after N minutes with a message.
-    match: ['remind me in (?P<minutes>\d+) (?:minutes?|mins?) (?:to )?(?P<what>.+)']
-    do:
-      - schedule: {after: "{{ minutes }}m", do: [{notify: {title: Reminder, message: "{{ what }}", priority: 4, tags: [alarm_clock]}}]}
-      - notify: {message: "⏰ {{ minutes }} min: {{ what }}", priority: 1}
-
-  - name: leaving soon
-    description: The user is leaving the house in N minutes; get the car ready and pause screens on departure.
-    match: ["(?:i'm |i am )?leaving in (?P<minutes>\\d+)"]
-    do:
-      - schedule: {id: precondition, after: "{{ [minutes | int - 10, 0] | max }}m", do: [{tesla: auto_conditioning_start}]}
-      - schedule: {id: departure, after: "{{ minutes }}m", do: [{run: house_pause}]}
-      - notify: {message: "Car climate in {{ [minutes | int - 10, 0] | max }} min, house pauses in {{ minutes }}", tags: [car]}
-
-  - name: car climate
-    match: ['(?:warm|cool|heat) (?:up )?the car|precondition']
-    do: [{tesla: auto_conditioning_start}, {notify: {message: "Car climate on", tags: [car]}}]
-
-  - name: frunk
-    match: ['(?:open )?(?:the )?frunk']
-    do: [{tesla: {command: actuate_trunk, params: {which_trunk: front}}}, {notify: {message: "Frunk open", tags: [car]}}]
-
-  - name: tally
-    description: Count something (water, coffee, push-ups) and say the running total.
-    match: ['^(?:log |add |one )?(?:a )?(?P<thing>water|coffee|pushups?)$']
-    do:
-      - state.increment: "tally.{{ thing }}"
-      - notify: {message: "{{ thing }} #{{ count }} today", priority: 1}
-
-  - name: volume
-    match: ['volume (?P<dir>up|down)(?: (?P<n>\d+))?']
-    do: [{tv: {command: "volume_{{ dir }}", repeat: "{{ n | default(3) }}"}}]
-
-  - name: switch mode
-    match: ['(?P<m>home|tv|focus) mode']
-    do: [{mode.set: "{{ m }}"}, {run: announce_mode}]
-
-  - name: goodnight
-    match: ['good ?night']
-    do:
-      - parallel:
-          - tv: {command: power_off, target: all}
-      - mode.set: home
-      - notify: {message: "Night. Water: {{ state['tally.water'] | default(0) }}, coffee: {{ state['tally.coffee'] | default(0) }}", tags: [crescent_moon]}
+# devices:                           # optional TV skills (Android/Fire TV via ADB, Roku via ECP)
+#   living_tv: {type: androidtv, host: 192.168.1.50, room: living}

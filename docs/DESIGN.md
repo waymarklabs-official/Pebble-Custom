@@ -83,7 +83,8 @@ walk away**, so `vehicle_state.locked == false` effectively means "I'm standing 
 | asleep or offline | assume locked and away → **precondition** (this wakes it) |
 | locked | **precondition** |
 | unlocked, nobody inside | **open rear trunk** (configurable: frunk) |
-| unlocked, user present (driving) | **nothing** (safety) and says so |
+| unlocked, user present or in gear | **nothing** (safety) and says so |
+| unlocked, but the phone's fresh location is > 150 m away | **refuses**: walk-away lock is probably off |
 
 State reads are cached for 30 s and only happen when a skill asks for them. The hub never polls
 on a timer, which would keep the car awake and cost API credits.
@@ -117,8 +118,15 @@ in Shortcuts:
 POST /api/v1/context/arrive/{place}
 POST /api/v1/context/leave/{place}
 POST /api/v1/context/focus/{name}       (name "off" clears it)
+POST /api/v1/context/visit/{place}      Wallet tap / NFC: fires "next time I'm at" reminders only
 POST /api/v1/context                    {"set": {...}, "location": {"lat":..,"lon":..}}
+POST /api/v1/owntracks                  OwnTracks HTTP mode (Basic auth, password = context token)
 ```
+
+**Debounce, from the iOS research:** geofences fire about 200 m past the edge and jitter near
+it. A leave within 4 minutes of arriving is ignored, and duplicate arrivals within 2 minutes
+(Shortcuts plus OwnTracks plus Wi-Fi) collapse into one. A later re-arrival at the "same" place
+still fires pending arrive reminders, because the leave may simply have been missed.
 
 The dashboard's Places page generates the exact URL and header for each automation, with copy
 buttons.
@@ -132,6 +140,19 @@ buttons.
   reminder is ignored for 15 min it is pushed once more.
 - **Daily digest** at a configured time: today's captures plus open reminders and list items.
 - **Optional Markdown mirror** of notes into an Obsidian vault.
+
+## Feedback, from the ntfy research
+
+- Publish with ntfy's **JSON API**. HTTP headers must be ASCII and titles carry emoji.
+- iOS maps priority 1–2 to passive (silent), 3 to active, and 4–5 to Time Sensitive.
+  Confirmations use 2–3 (capped by the mode's feedback level), errors 3, reminders 4.
+- The Pebble watch shows **title + first line** over ANCS and only offers *Dismiss*. So the
+  reminder text goes in the title, and the ring itself is the acknowledgement path (attention
+  layer).
+- iOS only honors action buttons on the **newest** notification, and tapping one opens the ntfy
+  app first. Done/Snooze buttons are a convenience; click/double on the ring is the primary path.
+- Each reminder push uses `sequence_id = rem-<id>`. Done sends a `clear` (works on Android/web,
+  harmless on iOS).
 
 ## Dashboard
 

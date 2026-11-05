@@ -1,206 +1,126 @@
 # Recipes
 
-Everything in `config.example.yaml`, the reasoning behind it, and more niche setups you can paste
-in. Every YAML block in this file is validated in CI (`tests/test_docs.py`), so they stay
-correct as the code changes.
+Setups worth copying. Each one can be built in the dashboard. The JSON blocks are what the
+dashboard saves (**Skills → Custom** or a mode's editor) and are validated in CI by
+`tests/test_docs.py`.
 
-## Principles that make a one-button UI pleasant
+## Memory
 
-1. **Feedback on every state change.** Changing modes pushes a cheat sheet of what each gesture
-   now does. Pebble watches and phones show ntfy pushes, so you're never guessing.
-2. **Silent where it matters.** Tally clicks (interruptions, water) make no noise. You get the
-   summary later.
-3. **Idempotent verbs.** `pause` pauses whatever is playing and leaves paused things alone, even
-   on Roku, which only has a toggle key (ringhub checks the player state first). `power_on` uses
-   Android's WAKEUP key, not POWER, so it never turns a TV *off*.
-4. **One gesture, one meaning per mode.** Keep the vocabulary small and use voice for the long
-   tail.
-5. **Never lose a thought.** Unmatched voice goes to an inbox, and failures push the reason.
+### "Did I…?": verification logs
+The classic memory-aid problem is not remembering *whether* you did something. Give the
+routine actions a one-click log, then ask later.
 
----
+- Skill **Took meds ✓** (template *Log something*), bound to **click** in **Morning** (home,
+  05:00–10:30).
+- Skill **Locked up ✓**, bound to **double** in **Heading out** (10 min after leaving home).
+- Later: *hold*, "did I take my meds?" → ✅ "Yes — 'Took meds ✓' at 8:04 am", or "No record
+  today".
 
-## TV & media
+### Place reminders that don't need geofences
+Say *"next time I'm at Target buy batteries"*. Then add a Wallet automation in Shortcuts:
+**Transaction → Merchant is Target → Get Contents of URL**
+`POST /api/v1/context/visit/target`. Paying there fires the reminder. Add "target" as a place
+(or as an alias) so the hub recognises the name.
 
-### "What did they say?" (tv mode, double-click)
-Rewinds a few seconds, turns captions on, and turns them off again 20 s later. Android exposes a
-captions key; on Roku the step is skipped and only the replay happens.
+### Parking memory with zero presses
+Shortcuts automations for car Bluetooth connect and disconnect (arrive/leave `car`) are enough.
+When the car disconnects, the hub saves a "Parked" log with the car's GPS position (Tesla) or the
+phone's last fix. *"Where did I park?"* pushes an Apple Maps link.
 
-### Room-aware "here"
-`target: here` resolves to the room you last targeted explicitly, then the TVs that are currently
-on, then `default_target`. To pin it explicitly, for example from an NFC sticker by the bed
-running `ringhub send` with a payload:
+### Nothing is ever lost
+Mis-heard capture? **Double within 30 s** undoes it. Unsure what you said? *"What did I say about
+the dentist"* searches everything, with stemming ("dentists", "dental").
 
-```yaml
-rules:
-  - name: nfc bedside sticker
-    when: {gesture: click, payload: bedroom}
-    do: [{here.set: bedroom}, {notify: "Ring now controls the bedroom"}]
+## Modes that pick themselves
+
+### The default day
+**Morning** (home, 05:00–10:30) → **Home** → **Heading out** (left home in the last 10 min) →
+**In the car** (car Bluetooth) → **Work** (at work) → **Sleep** (Sleep Focus). The order is the
+priority, so Morning wins over Home before 10:30.
+
+### Focus-driven work mode
+iOS Focus automations run silently. Turn on *Work Focus* → `POST /api/v1/context/focus/work`.
+A mode with **Focus is work** binds click to a status push and double to "what's next":
+
+```json
+{"id": "deep_work", "name": "Deep work", "icon": "🎧", "feedback": "quiet",
+ "when": {"focus": ["work"]},
+ "bindings": {"click": "moment", "double-click": "list"}}
 ```
 
-### Pi downloader → TV in one sentence
-*"Play the latest on the office TV."* `media.play_latest` asks your downloader for its newest
-item, then Android/Fire TV get a `VIEW` intent (Kodi/VLC/MX Player pick it up) and Roku gets the
-Media Assistant channel.
+### Weekend chores, weekday commute
+The same place can mean different things on different days:
 
-### App launcher with a fallback to search
-
-```yaml
-intents:
-  - name: open app
-    match: ['open (?P<app>youtube|netflix|plex)']
-    do:
-      - tv.launch: "{{ {'youtube': 'com.google.android.youtube.tv', 'netflix': 'com.netflix.ninja', 'plex': 'com.plexapp.android'}[app] }}"
+```json
+{"id": "weekend_home", "name": "Weekend at home", "icon": "🧺",
+ "when": {"places": ["home"], "days": ["sat", "sun"]},
+ "bindings": {"click": "moment"}}
 ```
 
----
+### Guests over: quiet everything
+Set a free-form context value from a Shortcut (`POST /api/v1/context` with
+`{"set": {"guests": true}}`) and let a mode match it:
 
-## Voice inbox, journal, memory
-
-### Never-lose-it inbox
-Unmatched voice becomes `- [ ] <transcript>` in `inbox/YYYY-MM-DD.md`. Point `notes_dir` at an
-Obsidian vault synced with Syncthing and it shows up in your task view.
-
-### Parking spot / "where did I put it" memory
-
-```yaml
-intents:
-  - name: remember location
-    match: ['(?:i )?(?:parked|put (?:the |my )?(?P<thing>\w+)) (?P<where>(?:on|in|at|under) .+)']
-    do:
-      - state.set: {key: "where.{{ thing | default('car') }}", value: "{{ where }} ({{ now.strftime('%a %H:%M') }})"}
-      - notify: {message: "Got it: {{ thing | default('car') }} {{ where }}", priority: 1}
-  - name: recall location
-    match: ['where (?:did i (?:park|put)|is) (?:the |my )?(?P<thing>\w+)?']
-    do:
-      - notify: "{{ state.get('where.' ~ (thing | default('car')), 'No idea, you never told me') }}"
+```json
+{"id": "guests", "name": "Guests over", "icon": "🫖", "feedback": "silent",
+ "when": {"context": {"guests": true}},
+ "bindings": {"click": "moment", "double-click": "nothing"}}
 ```
-
-### Baby log (two buttons, zero thinking at 3 a.m.)
-
-```yaml
-modes: [home, baby]
-rules:
-  - name: feed
-    when: {gesture: click, mode: baby}
-    do:
-      - state.increment: feeds
-      - state.set: {key: last_feed, value: "{{ now.strftime('%H:%M') }}"}
-      - notes.append: {file: "baby/{{ now.strftime('%Y-%m-%d') }}.md", text: "- {{ now.strftime('%H:%M') }} feed"}
-  - name: diaper
-    when: {gesture: double, mode: baby}
-    do:
-      - state.increment: diapers
-      - notes.append: {file: "baby/{{ now.strftime('%Y-%m-%d') }}.md", text: "- {{ now.strftime('%H:%M') }} diaper"}
-intents:
-  - name: last feed
-    match: ['when was the last feed|last feed']
-    do: [{notify: "Last feed {{ state.last_feed | default('never') }} · {{ state.feeds | default(0) }} today"}]
-```
-
----
-
-## Work & focus
-
-### Interruption-counting focus block (focus mode)
-Double starts 25 minutes, each click silently logs an interruption, and the closing push reports
-the count. It's useful data for a conversation with your manager.
-
-### Covert meeting signals
-Click while in a meeting, without opening anything:
-
-```yaml
-modes: [home, meeting]
-rules:
-  - name: running late
-    when: {gesture: click, mode: meeting}
-    do: [{notify: {topic: team-status, message: "Running ~5 min late, start without me", priority: 3}}]
-  - name: rescue call
-    when: {gesture: double, mode: meeting}
-    do:
-      - schedule: {after: 45s, do: [{notify: {message: "📞 Urgent: call back now", priority: 5, tags: [telephone]}}]}
-```
-
-### Slide clicker for a laptop
-Run a tiny HTTP agent on the presenting machine (or a Stream-Pi action server) and:
-
-```yaml
-modes: [home, present]
-rules:
-  - name: next slide
-    when: {gesture: click, mode: present}
-    do: [{http: {url: "http://laptop.local:9000/key/Right", method: POST, timeout: 2}}]
-  - name: previous slide
-    when: {gesture: double, mode: present}
-    do: [{http: {url: "http://laptop.local:9000/key/Left", method: POST, timeout: 2}}]
-```
-
----
 
 ## Car
 
-### Leave-in-N (voice)
-*"I'm leaving in 25."* The climate starts at T−10 so the cabin is ready when you get there, and
-every TV pauses at T−0. Say it again to reschedule; the job ids are fixed, so nothing stacks.
+### One button, two meanings
+**Car: trunk or climate**: unlocked → trunk (you're at the car with your hands full); locked or
+asleep → climate on. Bound by default to click in **Heading out** and **Home**, and to double in
+**Morning**. Warming the car from bed is one double-click.
 
-### Frunk for groceries
-*"Open the frunk."* That's `actuate_trunk` with `which_trunk: front`. Pair it with a time window
-so it only works when you're likely to be at the car:
+### Say it instead
+Voice phrases on the built-in car skills: "warm up the car", "open the frunk". Add your own:
 
-```yaml
-rules:
-  - name: frunk on triple at the car
-    when: {gesture: triple, state: {at_car: true}}
-    do: [{tesla: {command: actuate_trunk, params: {which_trunk: front}}}]
+```json
+{"id": "find_car", "name": "Flash the lights", "icon": "💡", "template": "car_command",
+ "params": {"command": "flash_lights"},
+ "phrases": ["flash the lights", "where's my car in this lot"]}
 ```
 
-`at_car` can be set by a phone automation (iOS Shortcuts / Tasker "connected to car Bluetooth")
-calling `ringhub send` or `/api/simulate` with a payload rule that runs `state.set`.
+## Work & household
 
----
+### Hand raise and bathroom requests
+Your existing ntfy flows, as skills with the *Send a push* template, targeting the topics your
+subscribers already listen to. Bound to click/double in **Work** by default. Say "hand raise"
+from any mode.
 
-## Household
+### Running late, from any mode
 
-### Hand raise & bathroom requests
-You already do these through ntfy. Target the topics your existing subscribers listen to:
-
-```yaml
-rules:
-  - name: bathroom request
-    when: {gesture: double, mode: home, time: {after: "08:00", before: "15:30"}, days: [mon, tue, wed, thu, fri]}
-    do: [{notify: {topic: bathroom-requests, message: "🚻 Request at {{ now.strftime('%H:%M') }}", priority: 4}}]
+```json
+{"id": "late", "name": "Running late", "icon": "⏱️", "template": "notify",
+ "params": {"topic": "team-status", "message": "Running ~10 min late, start without me", "priority": 3},
+ "phrases": ["tell them i'm running late", "running late"]}
 ```
 
-### Guest mode: disable the risky stuff
-Rules are first-match, so put this at the top:
+### Home Assistant, IFTTT, your Pi
+A *Call a webhook* skill reaches anything. For example, a Home Assistant webhook trigger:
 
-```yaml
-rules:
-  - name: guest lockout
-    when: {gesture: [triple, click-hold], state: {guest: true}}
-    do: [noop]
-intents:
-  - name: guest mode
-    match: ['guest mode (?P<on>on|off)']
-    do: [{state.set: {key: guest, value: "{{ on == 'on' }}"}}, {notify: "Guest mode {{ on }}"}]
+```json
+{"id": "goodnight", "name": "Goodnight", "icon": "🌙", "template": "webhook",
+ "params": {"url": "http://homeassistant.local:8123/api/webhook/ring-goodnight", "method": "POST"},
+ "phrases": ["good night", "goodnight"]}
 ```
 
-### Quiet hours
-Between 23:00 and 06:00 a click only pauses, with no pushes and nothing else:
+### Composite skills
+Custom steps chain anything, using the context in templates:
 
-```yaml
-rules:
-  - name: night click
-    when: {gesture: click, time: {after: "23:00", before: "06:00"}}
-    do: [{tv: {command: pause, target: all}}]
+```json
+{"id": "leaving_work", "name": "Leaving work", "icon": "🏃", "template": "custom",
+ "steps": [
+   {"memory.log": {"text": "Left work"}},
+   {"notify": {"topic": "family", "message": "Leaving work now — home in ~25 min"}},
+   {"skill.run": "list"}
+ ],
+ "phrases": ["heading home"]}
 ```
 
----
+## Other buttons, same brain
 
-## Glue
-
-- **Home Assistant:** `http` to an HA webhook trigger (`http://ha.local:8123/api/webhook/<id>`)
-  gives the ring access to every HA entity without ringhub knowing about HA.
-- **Other buttons → same brain:** `ringhub send click --payload desk-button --secret …` from a
-  Stream Deck, Flic, cron job or NFC Shortcut, matched with `when: {payload: desk-button}`.
-- **Your own action:** add a function with `@action("name", ParamsModel)` in
-  `src/ringhub/actions/`. It's validated at load time and documented by its pydantic model.
+`ringhub send click --secret …` sends exactly what the ring would. A Stream Deck key, a Flic, a
+cron job or an NFC Shortcut can drive the same modes and skills.

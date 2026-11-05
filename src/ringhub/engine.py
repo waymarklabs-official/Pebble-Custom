@@ -179,7 +179,7 @@ class Engine:
                                       status="error", error=str(err))
         if self.rt.config.notify_on_error:
             # Silent failure is the worst UX for a screenless button: always say something.
-            await self.rt.feedback.say(str(err)[:500], title=f"⚠️ {label(key)} failed", level="important",
+            await self.rt.feedback.say(str(err)[:500], title=f"⚠️ {label(key)} failed", level="error",
                                        tags=["warning"])
 
 
