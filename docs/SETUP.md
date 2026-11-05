@@ -1,7 +1,7 @@
 # Setup
 
 The target is a small always-on Linux box: a Pi 4/5, a thin client, or a container on your home
-server. ringhub idles at roughly 60 MB RAM and does no work between button presses.
+server. ringhub is a single asyncio process with SQLite and does no work between button presses.
 
 ## 1. Install
 

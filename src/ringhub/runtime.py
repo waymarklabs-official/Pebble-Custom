@@ -6,6 +6,7 @@ import asyncio
 import logging
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -77,9 +78,13 @@ class Scheduler:
         self._store = store
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._executor: Executor | None = None
+        self._live_vars: Callable[[], Awaitable[Vars]] | None = None
 
-    def bind(self, executor: Executor) -> None:
+    def bind(self, executor: Executor, live_vars: Callable[[], Awaitable[Vars]]) -> None:
+        """``live_vars`` supplies now/mode/state at fire time, so a job scheduled 25 minutes
+        ago reports the state as it is *now*, not as it was when it was scheduled."""
         self._executor = executor
+        self._live_vars = live_vars
 
     async def restore(self) -> None:
         for job in await self._store.jobs():
@@ -120,9 +125,8 @@ class Scheduler:
             await asyncio.sleep(max(0.0, job.run_at - time.time()))
             await self._store.delete_job(job.id)
             self._tasks.pop(job.id, None)
-            assert self._executor is not None
-            variables = dict(job.vars)
-            variables["job"] = {"id": job.id}
+            assert self._executor is not None and self._live_vars is not None
+            variables = {**job.vars, **await self._live_vars(), "job": {"id": job.id}}
             await self._executor.run(job.steps, variables)
             await self._store.log_event(delivery_id=None, gesture=None, detail=f"job {job.id}",
                                         status="ok")
@@ -149,7 +153,7 @@ class Runtime:
         self.notifier = Notifier(config.ntfy, client)
         self.scheduler = Scheduler(store)
         self.executor = Executor(self)
-        self.scheduler.bind(self.executor)
+        self.scheduler.bind(self.executor, self.base_vars)
         self.audio_dir = config.server.data_dir / "audio"
         self.intents = IntentRouter(config.intents)
         self.llm: LlmRouter | None = LlmRouter(config.llm, config.intents) if config.llm else None

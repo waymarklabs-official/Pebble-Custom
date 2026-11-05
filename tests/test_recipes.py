@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,12 @@ from ringhub.runtime import Runtime
 from ringhub.store import Store
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+async def wait_until(cond: Callable[[], bool]) -> None:
+    async with asyncio.timeout(2):
+        while not cond():  # noqa: ASYNC110 - polling a mock, no event to wait on
+            await asyncio.sleep(0.01)
 
 
 @dataclass
@@ -181,8 +188,9 @@ async def test_focus_mode_counts_and_summarises(h: Harness) -> None:
         await h.press(Gesture.CLICK)
     job = (await h.rt.scheduler.pending())[0]
     assert job.id == "focus"
-    # fire the job now and check the summary reads live state
-    await h.rt.executor.run(job.steps, {**await h.rt.base_vars()})
+    # Fire the persisted job through the real scheduler path, as if 25 minutes passed.
+    await h.rt.scheduler.schedule(job.steps, timedelta(seconds=0), job.vars, job.id)
+    await wait_until(lambda: len(h.said()) >= 2)
     assert h.said()[-1] == "3 interruptions logged. Stand up."
 
 
