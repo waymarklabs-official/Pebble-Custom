@@ -77,22 +77,13 @@ def validate_steps(steps: list[dict[str, Any]], config: Config, where: str, dept
                 if not isinstance(nested, list):
                     raise StepError(loc, f"{f!r} must be a list of steps")
                 validate_steps(normalize_steps(nested), config, f"{loc}.{f}", depth + 1)
-        if name == "run":
-            macro = params.get("macro")
-            if isinstance(macro, str) and not is_template(macro) and macro not in config.macros:
-                raise StepError(loc, f"unknown macro {macro!r}")
         if name == "exec" and not config.allow_exec:
             raise StepError(loc, "exec is disabled; set allow_exec: true to enable it")
 
 
-def validate_config(config: Config) -> None:
-    """Validate every step list in the config. Raises StepError on the first problem."""
-    for macro, steps in config.macros.items():
-        validate_steps(steps, config, f"macros.{macro}")
-    for rule in config.rules:
-        validate_steps(rule.do, config, f"rule {rule.name!r}")
-    for intent in config.intents:
-        validate_steps(intent.do, config, f"intent {intent.name!r}")
+def validate_skill_steps(steps: list[dict[str, Any]], config: Config, where: str) -> None:
+    """Validate compiled skill steps (raises StepError with a readable location)."""
+    validate_steps(steps, config, where)
 
 
 class Executor:

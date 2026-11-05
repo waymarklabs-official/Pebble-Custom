@@ -1,4 +1,4 @@
-"""Voice routing, notes capture and media playback actions."""
+"""Markdown file and media playback actions."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
-from ..config import normalize_steps
 from ..devices import DeviceError
 from .base import ActionError, Params, Vars, action
 
@@ -19,60 +18,12 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------- voice
-
-
-class RouteParams(Params):
-    text: str | None = None
-    """Text to route; defaults to the event transcript."""
-    fallback: list[Any] | None = None
-    """Steps to run when no intent matches (e.g. save to inbox + notify)."""
-    use_llm: bool = True
-
-
-async def _run_intent(rt: Runtime, name: str, steps: list[dict[str, Any]], v: Vars, depth: int) -> None:
-    try:
-        await rt.executor.run(steps, v, depth=depth)
-    except ActionError as e:
-        raise ActionError(f"intent {name!r}: {e}") from e
-
-
-@action("intent.route", RouteParams, steps=("fallback",))
-async def intent_route(p: RouteParams, rt: Runtime, v: Vars) -> Vars:
-    text = p.text if p.text is not None else str(v.get("event", {}).get("transcript", ""))
-    depth = v.get("_depth", 0) + 1
-    if not text.strip():
-        raise ActionError("intent.route: empty transcript (is the webhook sending transcriptions?)")
-
-    match = rt.intents.match(text)
-    if match is not None:
-        v.update(match.groups)
-        v["intent"] = {"name": match.intent.name, "via": "pattern", "text": match.text}
-        await _run_intent(rt, match.intent.name, match.intent.do, v, depth)
-        return {}
-
-    if p.use_llm and rt.llm is not None:
-        choice = await rt.llm.classify(text)
-        intent = rt.intents.by_name(choice.intent) if choice else None
-        if choice and intent:
-            v.update(choice.slots)
-            v["intent"] = {"name": intent.name, "via": "llm", "text": text}
-            await _run_intent(rt, intent.name, intent.do, v, depth)
-            return {}
-
-    v["intent"] = {"name": None, "via": None, "text": text}
-    if p.fallback is None:
-        raise ActionError(f"no intent matched {text!r}")
-    await rt.executor.run(normalize_steps(p.fallback), v, depth=depth)
-    return {}
-
-
 # ---------------------------------------------------------------------------- notes
 
 
 class NotesParams(Params):
     file: str
-    """Path relative to ``notes_dir`` (templated, e.g. ``inbox/{{ now.strftime('%Y-%m-%d') }}.md``)."""
+    """Path relative to ``memory.markdown_dir``, e.g. ``lists/groceries.md``."""
     text: str
     ensure_header: str | None = None
     """Written once when the file is created (e.g. ``# Inbox {{ now.date() }}``)."""
@@ -88,10 +39,10 @@ def _safe_path(base: Path, relative: str) -> Path:
 
 @action("notes.append", NotesParams)
 async def notes_append(p: NotesParams, rt: Runtime, v: Vars) -> Vars:
-    """Append a line to a markdown file - point notes_dir at an Obsidian/Logseq vault."""
-    if rt.config.notes_dir is None:
-        raise ActionError("notes.append requires notes_dir in config")
-    path = _safe_path(rt.config.notes_dir, p.file)
+    """Append a line to any Markdown file under ``memory.markdown_dir`` (custom skills)."""
+    if rt.config.memory.markdown_dir is None:
+        raise ActionError("notes.append requires memory.markdown_dir in config")
+    path = _safe_path(rt.config.memory.markdown_dir, p.file)
 
     def write() -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

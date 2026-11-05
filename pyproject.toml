@@ -46,6 +46,10 @@ ignore = ["S101", "S603", "S607"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S105", "S106", "S108"]
+# These repositories interpolate only constant column lists and '?' placeholder runs into SQL;
+# every value is a bound parameter.
+"src/ringhub/memory/*" = ["S608"]
+"src/ringhub/catalog.py" = ["S608"]
 
 [tool.mypy]
 python_version = "3.11"

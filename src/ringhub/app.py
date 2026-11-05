@@ -1,55 +1,37 @@
-"""HTTP surface: the ring webhook, health check, and a token-protected admin API."""
+"""HTTP surface: the ring webhook, signed reminder links, the context feed, the dashboard."""
 
 from __future__ import annotations
 
-import hmac
 import logging
+import secrets
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Annotated, Any
+from pathlib import Path
+from typing import Any
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import UploadFile
 
 from . import __version__
 from .actions.base import ActionError
-from .config import Config, GestureField
+from .api import Services, build_router
+from .config import Config
 from .engine import Engine
-from .executor import validate_config
 from .models import Gesture, RingEvent
 from .runtime import Runtime
+from .seed import seed_if_empty
 from .store import Store
 from .webhook import WebhookError, authenticate, is_test_delivery, parse_button_body
 
 log = logging.getLogger(__name__)
 
-
-@dataclass
-class Services:
-    config: Config
-    store: Store
-    runtime: Runtime
-    engine: Engine
-
-
-def _services(request: Request) -> Services:
-    svc: Services = request.app.state.services
-    return svc
-
-
-Svc = Annotated[Services, Depends(_services)]
-
-
-class SimulateBody(BaseModel):
-    gesture: GestureField
-    transcript: str | None = None
-    payload: Any = None
+WEB_DIR = Path(__file__).parent / "web"
+LINK_SECRET_KEY = "secret.links"  # noqa: S105 - a state-table key name, not a secret
 
 
 def _ms_to_dt(ms: Any, fallback: datetime) -> datetime:
@@ -96,19 +78,38 @@ async def _parse_event(request: Request, body: bytes, svc: Services, delivery_id
         await form.close()
 
 
-def create_app(config: Config) -> FastAPI:
-    validate_config(config)
+async def _link_secret(store: Store) -> bytes:
+    """Per-install random secret for signed links and dashboard sessions (generated once)."""
+    value = await store.get(LINK_SECRET_KEY)
+    if not isinstance(value, str) or len(value) < 64:
+        value = secrets.token_hex(32)
+        await store.set(LINK_SECRET_KEY, value)
+    return bytes.fromhex(value)
 
+
+CSP = ("default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
+       "frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+
+_LINK_PAGE = """<!doctype html><meta name=viewport content="width=device-width,initial-scale=1">
+<title>ringhub</title><body style="font:16px system-ui;padding:2rem;max-width:30rem;margin:auto">
+<p>{text}</p>{form}</body>"""
+
+
+def create_app(config: Config) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         store = Store(config.server.data_dir / "ringhub.sqlite3")
         async with httpx.AsyncClient(timeout=10, follow_redirects=False) as client:
-            runtime = Runtime(config, store, client)
+            secret = await _link_secret(store)
+            runtime = Runtime(config, store, client, link_secret=secret)
+            if await seed_if_empty(runtime.catalog, config):
+                log.info("first boot: wrote default places, skills and modes")
             engine = Engine(runtime)
             await engine.start()
-            app.state.services = Services(config, store, runtime, engine)
-            log.info("ringhub %s ready: %d rules, %d intents, %d devices, modes=%s",
-                     __version__, len(config.rules), len(config.intents), len(config.devices), config.modes)
+            app.state.services = Services(config, store, runtime, engine, secret)
+            log.info("ringhub %s ready (dashboard %s, ntfy %s, tesla %s)", __version__,
+                     "on" if config.server.admin_token else "off — set server.admin_token",
+                     "on" if config.ntfy else "off", "on" if config.tesla else "off")
             try:
                 yield
             finally:
@@ -121,15 +122,19 @@ def create_app(config: Config) -> FastAPI:
 
     @app.exception_handler(WebhookError)
     async def _webhook_error(request: Request, exc: WebhookError) -> JSONResponse:
-        log.warning("rejected webhook from %s: %s", request.client.host if request.client else "?", exc.detail)
+        host = request.client.host if request.client else "?"
+        log.warning("rejected webhook from %s: %s", host, exc.detail)
         return JSONResponse({"error": exc.detail}, status_code=exc.status)
 
     @app.get("/healthz")
-    async def healthz(svc: Svc) -> dict[str, Any]:
-        return {"ok": True, "version": __version__, "mode": await svc.runtime.mode()}
+    async def healthz(request: Request) -> dict[str, Any]:
+        svc: Services = request.app.state.services
+        res = await svc.runtime.resolution()
+        return {"ok": True, "version": __version__, "mode": res.mode.id}
 
     @app.post(config.server.webhook_path)
-    async def ring_webhook(request: Request, svc: Svc) -> dict[str, Any]:
+    async def ring_webhook(request: Request) -> dict[str, Any]:
+        svc: Services = request.app.state.services
         ring = svc.config.ring
         declared = request.headers.get("content-length")
         if declared and declared.isdigit() and int(declared) > ring.max_body_bytes:
@@ -146,12 +151,9 @@ def create_app(config: Config) -> FastAPI:
             log.info("test event received (%s)", request.headers.get("content-type", "?"))
             await svc.store.log_event(delivery_id=envelope.delivery_id, gesture="test",
                                       detail="webhook test", status="ok")
-            if ring.notify_on_test and svc.runtime.notifier.enabled:
-                try:
-                    await svc.runtime.notifier.publish("Ring -> hub -> ntfy works.", title="ringhub test OK",
-                                                       tags=["white_check_mark"])
-                except ActionError as e:
-                    log.warning("test notification failed: %s", e)
+            if ring.notify_on_test:
+                await svc.runtime.feedback.say("Ring → hub → phone works.", title="ringhub test OK",
+                                               tags=["white_check_mark"])
             return {"ok": True, "test": True}
 
         gesture = envelope.gesture
@@ -164,42 +166,41 @@ def create_app(config: Config) -> FastAPI:
         await svc.engine.submit(event)
         return {"ok": True}
 
-    # ------------------------------------------------------------------ admin API
+    # ------------------------------------------------------------------ signed reminder links
 
-    def require_admin(request: Request, svc: Svc) -> None:
-        token = svc.config.server.admin_token
-        if token is None:
-            raise HTTPException(404)
-        supplied = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
-        if not hmac.compare_digest(supplied.encode(), token.get_secret_value().encode()):
-            raise HTTPException(401, "bad admin token")
+    @app.api_route("/r/{rid}/{action}", methods=["GET", "POST"], response_model=None)
+    async def reminder_link(rid: str, action: str, request: Request, exp: str = "", sig: str = "") -> Response:
+        svc: Services = request.app.state.services
+        path = f"/r/{rid}/{action}"
+        if action not in ("done", "snooze") or not svc.runtime.links.verify(path, exp, sig):
+            return HTMLResponse(_LINK_PAGE.format(text="This link is invalid or has expired.", form=""), 403)
+        if request.method == "GET":
+            # Link previews and prefetchers use GET: never act on it, offer a button instead.
+            form = (f'<form method=post action="{path}?exp={exp}&sig={sig}">'
+                    f'<button style="font-size:1.2rem;padding:.6rem 1.2rem">{action.title()}</button></form>')
+            return HTMLResponse(_LINK_PAGE.format(text="Confirm:", form=form))
+        try:
+            r = await (svc.runtime.memory.done(rid) if action == "done" else svc.runtime.memory.snooze(rid))
+        except ActionError as e:
+            return JSONResponse({"error": str(e)}, 400)
+        if r is None:
+            return JSONResponse({"ok": True, "note": "already handled"})
+        return JSONResponse({"ok": True, "status": r.status})
 
-    admin = [Depends(require_admin)]
+    app.include_router(build_router(config))
 
-    @app.post("/api/simulate", dependencies=admin)
-    async def simulate(body: SimulateBody, svc: Svc) -> dict[str, Any]:
-        """Fire a gesture as if the ring sent it (goes through the combo engine too)."""
-        now = datetime.now(UTC)
-        event = RingEvent(delivery_id=f"sim-{uuid.uuid4().hex[:12]}", gesture=body.gesture,
-                          received_at=now, occurred_at=now, transcript=body.transcript,
-                          payload=body.payload)
-        await svc.engine.submit(event)
-        return {"ok": True, "delivery_id": event.delivery_id}
+    # ------------------------------------------------------------------ dashboard
 
-    @app.get("/api/events", dependencies=admin)
-    async def events(svc: Svc, limit: int = 50) -> list[dict[str, Any]]:
-        return await svc.store.recent_events(max(1, min(limit, 500)))
+    if (WEB_DIR / "index.html").exists():
+        app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 
-    @app.get("/api/state", dependencies=admin)
-    async def state(svc: Svc) -> dict[str, Any]:
-        return {"mode": await svc.runtime.mode(), "state": await svc.store.all_state()}
-
-    @app.get("/api/jobs", dependencies=admin)
-    async def jobs(svc: Svc) -> list[dict[str, Any]]:
-        return [{"id": j.id, "run_at": j.run_at, "steps": j.steps} for j in await svc.runtime.scheduler.pending()]
-
-    @app.delete("/api/jobs/{job_id}", dependencies=admin)
-    async def cancel_job(job_id: str, svc: Svc) -> dict[str, Any]:
-        return {"cancelled": await svc.runtime.scheduler.cancel(job_id)}
+        @app.get("/", include_in_schema=False)
+        async def index() -> FileResponse:
+            return FileResponse(WEB_DIR / "index.html", headers={
+                "Cache-Control": "no-cache",
+                "Content-Security-Policy": CSP,
+                "X-Content-Type-Options": "nosniff",
+                "Referrer-Policy": "no-referrer",
+            })
 
     return app

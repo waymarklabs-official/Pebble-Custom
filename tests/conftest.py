@@ -15,6 +15,7 @@ from ringhub.webhook import sign
 
 SECRET = "test-secret-0123456789abcdefghijklmnop"
 ADMIN = "admin-token-for-tests"
+CONTEXT = "context-token-for-tests"
 
 
 @pytest.fixture
@@ -22,11 +23,11 @@ def make_config(tmp_path: Path) -> Callable[..., Config]:
     def factory(extra: dict[str, Any] | None = None, **overrides: Any) -> Config:
         doc: dict[str, Any] = {
             "timezone": "America/Chicago",
-            "server": {"data_dir": str(tmp_path / "data"), "admin_token": ADMIN},
+            "server": {"data_dir": str(tmp_path / "data"), "admin_token": ADMIN, "context_token": CONTEXT,
+                       "public_url": "https://hub.test"},
             "ring": {"secrets": {"default": SECRET}, "combo_window_ms": 150},
             "ntfy": {"url": "https://ntfy.test", "topic": "ring"},
-            "notes_dir": str(tmp_path / "notes"),
-            "modes": ["home", "tv"],
+            "memory": {"markdown_dir": str(tmp_path / "vault")},
         }
         doc.update(extra or {})
         doc.update(overrides)

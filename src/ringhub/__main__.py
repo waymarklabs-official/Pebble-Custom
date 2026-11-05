@@ -14,7 +14,7 @@ from pathlib import Path
 import httpx
 
 from .config import ConfigError, load_config
-from .executor import StepError, validate_config
+from .executor import StepError
 from .models import Gesture, parse_gesture
 from .webhook import SUPPORTED_VERSION, sign
 
@@ -23,14 +23,15 @@ DEFAULT_CONFIG = "config.yaml"
 
 def _cmd_check(args: argparse.Namespace) -> int:
     cfg = load_config(args.config)
-    validate_config(cfg)
-    combos = [r for r in cfg.rules if r.when.sequence]
+    srv = cfg.server
     print(f"OK  {args.config}")
-    print(f"    modes:    {', '.join(cfg.modes)}")
-    print(f"    devices:  {', '.join(f'{n} ({d.type}, room={d.room})' for n, d in cfg.devices.items()) or '-'}")
-    print(f"    rules:    {len(cfg.rules)} ({len(combos)} combos)")
-    print(f"    intents:  {len(cfg.intents)}{' + LLM fallback' if cfg.llm else ''}")
+    print(f"    dashboard: {'on' if srv.admin_token else 'OFF (set server.admin_token)'}")
+    print(f"    phone context feed: {'on' if srv.context_token else 'OFF (set server.context_token)'}")
+    print(f"    reminder buttons: {'on via ' + srv.public_url if srv.public_url else 'off (set server.public_url)'}")
     print(f"    feedback: {'ntfy ' + cfg.ntfy.topic if cfg.ntfy else 'none (failures are only logged!)'}")
+    print(f"    car: {'Tesla ' + cfg.tesla.vin[-6:] if cfg.tesla else 'not configured'}")
+    print(f"    voice fallback LLM: {'on' if cfg.llm else 'off'}")
+    print(f"    digest: {cfg.memory.digest_time or 'off'} · markdown mirror: {cfg.memory.markdown_dir or 'off'}")
     return 0
 
 

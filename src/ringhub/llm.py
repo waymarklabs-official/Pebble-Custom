@@ -1,7 +1,9 @@
-"""Optional Claude fallback: map a free-form transcript onto one of *your* intents.
+"""Optional Claude fallback for reminders the deterministic parser didn't understand.
 
-The model never acts on its own. It can only choose an intent you defined (or ``none``) and
-fill named slots; the chosen intent's steps then run exactly as if a regex had matched.
+"ping me after lunch about the invoice" or "nudge me Thursday before the standup" are easy for a
+model and tedious for regexes. The model only ever *extracts* (what, when, where) into a fixed
+schema; the hub validates the result and then treats it exactly like a parsed reminder. When the
+model says it isn't a reminder, the sentence is saved as a note as usual.
 Requires ``pip install 'ringhub[llm]'``.
 """
 
@@ -9,38 +11,42 @@ from __future__ import annotations
 
 import json
 import logging
-import re
-from dataclasses import dataclass
+from collections.abc import Mapping
+from datetime import datetime, timedelta
 from typing import Any
 
-from .config import IntentConfig, LlmConfig
+from .config import LlmConfig
+from .memory.parse import ParsedReminder, Trigger
 
 log = logging.getLogger(__name__)
 
 _SYSTEM = (
-    "You route short voice commands, spoken into a smart ring, to a fixed list of intents for a "
-    "home automation hub. Pick the single intent whose description best matches what the speaker "
-    "wants, or 'none' if no intent clearly fits; never guess. Extract slot values as short plain "
-    "strings using the slot names listed for that intent (numbers as digits). Transcripts come "
-    "from speech recognition and may contain recognition errors."
+    "You read one short sentence that someone spoke into a smart ring (speech recognition, may contain "
+    "errors) and decide whether they are asking to be reminded of something later. If they are NOT asking "
+    "for a reminder (a fact, an idea, a journal thought), answer is_reminder=false. If they are, extract the "
+    "reminder text as a short imperative (e.g. 'Call the bank'), and when or where it should fire: either a "
+    "local date-time, a number of minutes from now, arriving at a place, leaving a place, or no trigger "
+    "(a to-do list item). Only use place ids from the provided list; if the place is not in the list, use "
+    "its lowercase name. Never invent details that were not said."
 )
 
-
-@dataclass(frozen=True, slots=True)
-class LlmChoice:
-    intent: str
-    slots: dict[str, str]
-
-
-def _slot_names(intent: IntentConfig) -> list[str]:
-    names: list[str] = []
-    for pattern in intent.match:
-        names.extend(n for n in re.compile(pattern).groupindex if n not in names)
-    return names
+_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "is_reminder": {"type": "boolean"},
+        "text": {"type": "string"},
+        "trigger": {"type": "string", "enum": ["datetime", "minutes", "arrive", "leave", "none"]},
+        "local_datetime": {"type": "string", "description": "YYYY-MM-DDTHH:MM in the user's local time, or ''"},
+        "minutes": {"type": "integer"},
+        "place": {"type": "string"},
+    },
+    "required": ["is_reminder", "text", "trigger", "local_datetime", "minutes", "place"],
+    "additionalProperties": False,
+}
 
 
 class LlmRouter:
-    def __init__(self, cfg: LlmConfig, intents: list[IntentConfig]) -> None:
+    def __init__(self, cfg: LlmConfig) -> None:
         try:
             import anthropic
         except ImportError:
@@ -50,40 +56,16 @@ class LlmRouter:
         self._client = anthropic.AsyncAnthropic(
             api_key=cfg.api_key.get_secret_value(), timeout=cfg.timeout_seconds, max_retries=1)
         self._model = cfg.model
-        self._intents = intents
-        catalog = [
-            {"name": i.name, "description": i.description or i.name, "slots": _slot_names(i)}
-            for i in intents
-        ]
-        # Stable system prompt (catalog only changes on config reload) keeps it cacheable.
-        self._system = f"{_SYSTEM}\n\nIntents:\n{json.dumps(catalog, indent=1)}"
-        self._schema: dict[str, Any] = {
-            "type": "object",
-            "properties": {
-                "intent": {"type": "string", "enum": [i.name for i in intents] + ["none"]},
-                "slots": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {"name": {"type": "string"}, "value": {"type": "string"}},
-                        "required": ["name", "value"],
-                        "additionalProperties": False,
-                    },
-                },
-            },
-            "required": ["intent", "slots"],
-            "additionalProperties": False,
-        }
 
-    async def classify(self, transcript: str) -> LlmChoice | None:
+    async def _ask(self, system: str, user: str) -> dict[str, Any] | None:
         a = self._anthropic
         try:
             response = await self._client.beta.messages.create(
                 model=self._model,
                 max_tokens=1024,
-                system=self._system,
-                messages=[{"role": "user", "content": transcript}],
-                output_config={"effort": "low", "format": {"type": "json_schema", "schema": self._schema}},
+                system=system,
+                messages=[{"role": "user", "content": user}],
+                output_config={"effort": "low", "format": {"type": "json_schema", "schema": _SCHEMA}},
                 betas=["server-side-fallback-2026-07-01"],
                 fallbacks="default",
             )
@@ -96,9 +78,7 @@ class LlmRouter:
         except a.APIConnectionError as e:
             log.warning("llm unreachable: %s", e)
             return None
-
         if response.stop_reason == "refusal":
-            log.info("llm declined to classify transcript")
             return None
         text = next((b.text for b in response.content if b.type == "text"), None)
         if text is None:
@@ -108,14 +88,43 @@ class LlmRouter:
         except json.JSONDecodeError:
             log.warning("llm returned non-JSON output (stop_reason=%s)", response.stop_reason)
             return None
-        intent = data.get("intent")
-        if not isinstance(intent, str) or intent == "none":
-            return None
-        valid = {i.name: set(_slot_names(i)) for i in self._intents}
-        if intent not in valid:
-            return None
-        slots = {
-            s["name"]: s["value"] for s in data.get("slots", [])
-            if isinstance(s, dict) and s.get("name") in valid[intent] and isinstance(s.get("value"), str)
-        }
-        return LlmChoice(intent=intent, slots=slots)
+        return data if isinstance(data, dict) else None
+
+    async def extract_reminder(self, transcript: str, now: datetime,
+                               places: Mapping[str, str]) -> ParsedReminder | None:
+        place_ids = sorted(set(places.values()))
+        user = (f"Now: {now:%A %Y-%m-%d %H:%M} (local time)\nKnown places: {', '.join(place_ids) or 'none'}\n"
+                f"Sentence: {transcript}")
+        data = await self._ask(_SYSTEM, user)
+        return interpret(data, now, places) if data else None
+
+
+def interpret(data: dict[str, Any], now: datetime, places: Mapping[str, str]) -> ParsedReminder | None:
+    """Validate the model's JSON into a reminder (pure, unit-tested)."""
+    if not data.get("is_reminder"):
+        return None
+    text = str(data.get("text") or "").strip()[:300]
+    if not text:
+        return None
+    kind = data.get("trigger")
+    if kind == "minutes":
+        minutes = data.get("minutes")
+        if not isinstance(minutes, int) or not 0 < minutes <= 60 * 24 * 366:
+            return ParsedReminder(text, Trigger("none"))
+        return ParsedReminder(text, Trigger("time", at=now + timedelta(minutes=minutes)))
+    if kind == "datetime":
+        try:
+            at = datetime.strptime(str(data.get("local_datetime")), "%Y-%m-%dT%H:%M").replace(tzinfo=now.tzinfo)
+        except ValueError:
+            return ParsedReminder(text, Trigger("none"))
+        if at <= now:
+            return ParsedReminder(text, Trigger("none"))
+        return ParsedReminder(text, Trigger("time", at=at))
+    if kind in ("arrive", "leave"):
+        raw = str(data.get("place") or "").strip().lower()
+        known = set(places.values())
+        place = raw if raw in known else places.get(raw, raw.replace(" ", "_"))
+        if not place:
+            return ParsedReminder(text, Trigger("none"))
+        return ParsedReminder(text, Trigger(kind, place=place, place_known=place in known))
+    return ParsedReminder(text, Trigger("none"))

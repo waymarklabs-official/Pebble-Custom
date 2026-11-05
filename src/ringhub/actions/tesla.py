@@ -57,11 +57,13 @@ class TeslaClient:
                 await self._store.set(_REFRESH_KEY, data["refresh_token"])
             return self._access
 
-    async def _call(self, method: str, path: str, json: Any = None) -> Any:
+    async def _call(self, method: str, path: str, json: Any = None, *, read: bool = False,
+                    params: dict[str, str] | None = None) -> Any:
         headers = {"Authorization": f"Bearer {await self._token()}"}
-        url = f"{self._cfg.base_url.rstrip('/')}/api/1/vehicles/{self._cfg.vin}{path}"
+        base = (self._cfg.read_url or self._cfg.base_url) if read else self._cfg.base_url
+        url = f"{base.rstrip('/')}/api/1/vehicles/{self._cfg.vin}{path}"
         try:
-            resp = await self._http.request(method, url, json=json, headers=headers)
+            resp = await self._http.request(method, url, json=json, headers=headers, params=params)
         except httpx.HTTPError as e:
             raise ActionError(f"tesla {path}: {e!r}") from None
         if resp.status_code == 408:
@@ -70,11 +72,24 @@ class TeslaClient:
             raise ActionError(f"tesla {path}: HTTP {resp.status_code} {resp.text[:200]}")
         return resp.json().get("response")
 
+    async def online_state(self) -> str:
+        """``online`` / ``asleep`` / ``offline`` without waking the car."""
+        info = await self._call("GET", "", read=True)
+        return str(info.get("state", "unknown")) if isinstance(info, dict) else "unknown"
+
+    async def vehicle_data(self) -> dict[str, Any]:
+        """Lock/presence/drive/climate/location snapshot. Raises (408) if the car is asleep."""
+        data = await self._call("GET", "/vehicle_data", read=True,
+                                params={"endpoints": "vehicle_state;drive_state;climate_state;location_data"})
+        if not isinstance(data, dict):
+            raise ActionError("tesla: unexpected vehicle_data response")
+        return data
+
     async def wake(self) -> None:
         deadline = time.monotonic() + self._cfg.wake_timeout_seconds
         await self._call("POST", "/wake_up")
         while time.monotonic() < deadline:
-            info = await self._call("GET", "")
+            info = await self._call("GET", "", read=True)
             if isinstance(info, dict) and info.get("state") == "online":
                 return
             await asyncio.sleep(3)

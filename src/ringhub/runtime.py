@@ -14,61 +14,27 @@ import httpx
 
 from .actions.base import ActionError, Vars
 from .actions.tesla import TeslaClient
-from .config import Config, NtfyConfig
+from .catalog import Catalog, Mode
+from .config import Config
+from .context import Context
 from .devices import DeviceRegistry
 from .executor import Executor
-from .intents import IntentRouter
+from .feedback import Feedback, cap
+from .links import LinkSigner
 from .llm import LlmRouter
+from .memory.notes import Notes
+from .memory.reminders import Reminders
+from .memory.service import Memory
+from .modes import Resolution, binding, resolve
+from .notifier import Notifier
+from .phrases import PhraseIndex
 from .store import Job, Store
+from .templates import TemplateError, compile_skill, should_confirm
+from .vehicle import Vehicle
 
 log = logging.getLogger(__name__)
 
-MODE_KEY = "mode"
-
-
-class Notifier:
-    """Publishes to ntfy. Doubles as the hub's feedback channel (phone, Pebble watch, desktop)."""
-
-    def __init__(self, cfg: NtfyConfig | None, client: httpx.AsyncClient) -> None:
-        self._cfg = cfg
-        self._client = client
-
-    @property
-    def enabled(self) -> bool:
-        return self._cfg is not None
-
-    async def publish(
-        self,
-        message: str,
-        *,
-        title: str | None = None,
-        topic: str | None = None,
-        priority: int | None = None,
-        tags: list[str] | None = None,
-        click: str | None = None,
-        actions: str | None = None,
-    ) -> None:
-        if self._cfg is None:
-            raise ActionError("notify used but no 'ntfy' section is configured")
-        headers: dict[str, str] = {}
-        if title:
-            headers["Title"] = title
-        if priority:
-            headers["Priority"] = str(priority)
-        if tags:
-            headers["Tags"] = ",".join(tags)
-        if click:
-            headers["Click"] = click
-        if actions:
-            headers["Actions"] = actions
-        if self._cfg.token:
-            headers["Authorization"] = f"Bearer {self._cfg.token.get_secret_value()}"
-        url = f"{self._cfg.url.rstrip('/')}/{topic or self._cfg.topic}"
-        try:
-            resp = await self._client.post(url, content=message.encode("utf-8"), headers=headers, timeout=10)
-            resp.raise_for_status()
-        except httpx.HTTPError as e:
-            raise ActionError(f"ntfy publish failed: {e!r}") from None
+OVERRIDE_KEY = "mode_override"
 
 
 class Scheduler:
@@ -145,31 +111,114 @@ class Scheduler:
 
 
 class Runtime:
-    def __init__(self, config: Config, store: Store, client: httpx.AsyncClient) -> None:
+    """Everything an action can touch. Built once per process by the app lifespan."""
+
+    def __init__(self, config: Config, store: Store, client: httpx.AsyncClient, *, link_secret: bytes) -> None:
         self.config = config
         self.store = store
         self.http = client
         self.devices = DeviceRegistry(config, client, store)
         self.notifier = Notifier(config.ntfy, client)
+        self.feedback = Feedback(self.notifier)
+        self.links = LinkSigner(link_secret, config.server.public_url)
         self.scheduler = Scheduler(store)
         self.executor = Executor(self)
         self.scheduler.bind(self.executor, self.base_vars)
         self.audio_dir = config.server.data_dir / "audio"
-        self.intents = IntentRouter(config.intents)
-        self.llm: LlmRouter | None = LlmRouter(config.llm, config.intents) if config.llm else None
+        self.catalog = Catalog(store)
+        self.context = Context(store)
+        self.notes = Notes(store)
+        self.reminders = Reminders(store)
+        self.memory = Memory(self)
+        self.context.on_place_event(self.memory.on_place_event)
+        self.llm: LlmRouter | None = LlmRouter(config.llm) if config.llm else None
         self.tesla: TeslaClient | None = TeslaClient(config.tesla, store) if config.tesla else None
+        self.vehicle: Vehicle | None = (
+            Vehicle(self.tesla, config.tesla.state_ttl_seconds) if self.tesla and config.tesla else None)
+        self._phrases: tuple[int, PhraseIndex] | None = None
 
     def now(self) -> datetime:
         return datetime.now(self.config.tz)
 
-    async def mode(self) -> str:
-        mode = await self.store.get(MODE_KEY)
-        return mode if mode in self.config.modes else self.config.modes[0]
+    # ------------------------------------------------------------------ modes
+
+    async def resolution(self, ctx: dict[str, Any] | None = None, at: datetime | None = None) -> Resolution:
+        modes = await self.catalog.modes()
+        return resolve(modes, ctx if ctx is not None else await self.context.snapshot(),
+                       at or self.now(), await self.store.get(OVERRIDE_KEY))
+
+    async def set_override(self, mode_id: str | None, duration: timedelta | None = None) -> None:
+        if mode_id is None:
+            await self.store.delete(OVERRIDE_KEY)
+            return
+        mode = await self.catalog.mode(mode_id)
+        if mode is None or not mode.enabled:
+            raise ActionError(f"unknown or disabled mode {mode_id!r}")
+        await self.store.set(OVERRIDE_KEY, {
+            "mode": mode_id,
+            "place": await self.context.get("place"),
+            "expires_at": time.time() + duration.total_seconds() if duration else None,
+        })
+
+    async def cycle_override(self) -> Mode:
+        modes = [m for m in await self.catalog.modes() if m.enabled]
+        current = (await self.resolution()).mode
+        idx = next((i for i, m in enumerate(modes) if m.id == current.id), -1)
+        nxt = modes[(idx + 1) % len(modes)]
+        await self.set_override(nxt.id)
+        return nxt
+
+    async def describe_mode(self, res: Resolution | None = None) -> str:
+        res = res or await self.resolution()
+        modes = await self.catalog.modes()
+        lines = []
+        for key, label in (("click", "click"), ("double-click", "double"), ("single-click-hold", "hold"),
+                           ("double-click-hold", "click-hold")):
+            sid, _ = binding(modes, res.mode, key)
+            skill = await self.catalog.skill(sid) if sid else None
+            lines.append(f"{label}: {skill.icon + ' ' + skill.name if skill else '—'}")
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------ skills
+
+    async def phrase_index(self) -> PhraseIndex:
+        version = self.catalog.version
+        if self._phrases is None or self._phrases[0] != version:
+            entries = [(s.id, ph) for s in await self.catalog.skills() for ph in s.phrases]
+            self._phrases = (version, PhraseIndex(entries))
+        return self._phrases[1]
+
+    async def run_skill(self, skill_id: str, variables: Vars, *, via: str = "") -> Vars:
+        skill = await self.catalog.skill(skill_id)
+        if skill is None:
+            raise ActionError(f"skill {skill_id!r} no longer exists")
+        try:
+            steps = compile_skill(skill)
+        except TemplateError as e:
+            raise ActionError(str(e)) from None
+        variables = {**variables, "skill": {"id": skill.id, "name": skill.name, "via": via}}
+        depth = int(variables.get("_depth", 0)) + 1
+        try:
+            result = await self.executor.run(steps, variables, depth=depth)
+        except ActionError as e:
+            raise ActionError(f"{skill.icon} {skill.name}: {e}") from e
+        if should_confirm(skill):
+            await self.feedback.say(f"{skill.icon} {skill.name}",
+                                    level=cap("quiet", str(variables.get("feedback", "normal"))))
+        return result
+
+    # ------------------------------------------------------------------ vars
 
     async def base_vars(self) -> Vars:
+        ctx = await self.context.snapshot()
+        res = await self.resolution(ctx)
         return {
             "now": self.now(),
-            "mode": await self.mode(),
+            "mode": res.mode.id,
+            "mode_name": res.mode.name,
+            "feedback": res.mode.feedback,
+            "place": ctx.get("place"),
+            "context": ctx,
             "state": await self.store.all_state(),
         }
 

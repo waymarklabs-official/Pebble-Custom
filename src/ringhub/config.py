@@ -20,6 +20,7 @@ from pydantic import (
     BeforeValidator,
     ConfigDict,
     Field,
+    PlainSerializer,
     SecretStr,
     field_validator,
     model_validator,
@@ -86,7 +87,25 @@ class ServerConfig(_Strict):
     webhook_path: str = "/ring"
     data_dir: Path = Path("./data")
     admin_token: OptionalSecret = None
-    """Bearer token for /api/* (event log, simulate). Admin API is disabled when unset."""
+    """Dashboard login and admin API. Both are disabled when unset."""
+    context_token: OptionalSecret = None
+    """Scoped token your phone's Shortcuts use to report place/Focus. It can only write context."""
+    public_url: str | None = None
+    """How your phone reaches the hub (e.g. https://hub.tailnet.ts.net). Enables Done/Snooze buttons."""
+
+    @field_validator("admin_token", "context_token")
+    @classmethod
+    def _long_enough(cls, v: SecretStr | None) -> SecretStr | None:
+        if v is not None and len(v.get_secret_value()) < 16:
+            raise ValueError("tokens must be at least 16 characters (use `ringhub secret`)")
+        return v
+
+    @field_validator("public_url")
+    @classmethod
+    def _url(cls, v: str | None) -> str | None:
+        if v is not None and not re.match(r"^https?://[^\s/]+", v):
+            raise ValueError("public_url must look like https://host[:port]")
+        return v.rstrip("/") if v else v
 
 
 class RingConfig(_Strict):
@@ -186,6 +205,9 @@ class TeslaConfig(_Strict):
     auth_url: str = "https://fleet-auth.prd.vn.cloud.tesla.com/oauth2/v3/token"
     ca_cert: Path | None = None
     """CA bundle for the proxy's self-signed TLS cert."""
+    read_url: str | None = None
+    """Where state reads go (defaults to base_url; the proxy forwards them unchanged)."""
+    state_ttl_seconds: float = Field(30, ge=5, le=600)
     wake_timeout_seconds: float = 45.0
 
 
@@ -193,7 +215,7 @@ class LlmConfig(_Strict):
     """Optional fallback that maps free-form voice to one of your intents via Claude."""
 
     api_key: SecretStr
-    model: str = "claude-haiku-5-5"
+    model: str = "claude-opus-5-5"
     timeout_seconds: float = 15.0
 
 
@@ -205,13 +227,13 @@ def _parse_hhmm(v: Any) -> dtime:
         return v
     if isinstance(v, int):  # YAML 1.1 parses 22:00 as sexagesimal 1320
         return dtime(v // 60 % 24, v % 60)
-    m = re.fullmatch(r"(\d{1,2}):(\d{2})", str(v).strip())
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})(?::00)?", str(v).strip())
     if not m or int(m.group(1)) > 23 or int(m.group(2)) > 59:
         raise ValueError(f"expected HH:MM, got {v!r}")
     return dtime(int(m.group(1)), int(m.group(2)))
 
 
-Hhmm = Annotated[dtime, BeforeValidator(_parse_hhmm)]
+Hhmm = Annotated[dtime, BeforeValidator(_parse_hhmm), PlainSerializer(lambda t: t.strftime("%H:%M"), return_type=str)]
 Weekday = Literal["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
 
@@ -223,34 +245,6 @@ class TimeWindow(_Strict):
         if self.after <= self.before:
             return self.after <= t < self.before
         return t >= self.after or t < self.before  # wraps midnight
-
-
-class When(_Strict):
-    gesture: GestureList | None = None
-    sequence: GestureList | None = None
-    mode: StrList | None = None
-    time: TimeWindow | None = None
-    days: Annotated[list[Weekday], BeforeValidator(_as_list)] | None = None
-    state: dict[str, Any] | None = None
-    payload: Any = None
-    """Equality match against the click payload configured in the app."""
-    transcript: str | None = None
-    """Regex (case-insensitive) searched in the voice transcript."""
-
-    @model_validator(mode="after")
-    def _check(self) -> When:
-        if self.gesture is not None and self.sequence is not None:
-            raise ValueError("use either 'gesture' or 'sequence', not both")
-        if self.sequence is not None:
-            if len(self.sequence) < 2:
-                raise ValueError("a sequence needs at least two gestures (use 'gesture' for one)")
-            if any(g.is_voice for g in self.sequence):
-                # Voice deliveries arrive only after recording + transcription, far outside any
-                # sane combo window. Use a click to set state/mode and condition the voice rule.
-                raise ValueError("voice gestures cannot be part of a sequence; use mode/state instead")
-        if self.transcript is not None:
-            re.compile(self.transcript)
-        return self
 
 
 Step = dict[str, Any]
@@ -270,36 +264,16 @@ def normalize_steps(v: Any) -> Any:
 Steps = Annotated[list[Step], BeforeValidator(normalize_steps)]
 
 
-class RuleConfig(_Strict):
-    name: str
-    when: When = Field(default_factory=When)
-    do: Steps
-    continue_: bool = Field(False, alias="continue")
-    """Keep evaluating later rules after this one matched (default: first match wins)."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
-
-
-class IntentConfig(_Strict):
-    name: str
-    match: StrList
-    """Regexes searched in the normalized transcript. Named groups become template vars."""
-    description: str | None = None
-    """Shown to the optional LLM fallback so it knows when to pick this intent."""
-    do: Steps
-
-    @field_validator("match")
-    @classmethod
-    def _compile(cls, v: list[str]) -> list[str]:
-        for pattern in v:
-            try:
-                re.compile(pattern)
-            except re.error as e:
-                raise ValueError(f"bad regex {pattern!r}: {e}") from None
-        return v
-
-
 # --------------------------------------------------------------------------- root
+
+
+class MemoryConfig(_Strict):
+    ack_window_seconds: int = Field(120, ge=0, le=900)
+    """After a reminder fires: click = done, double = snooze for this long. 0 disables."""
+    digest_time: Hhmm | None = None
+    """Evening summary push (captures + open reminders), e.g. "21:30"."""
+    markdown_dir: Path | None = None
+    """Mirror every note into daily Markdown files here (an Obsidian/Logseq vault)."""
 
 
 class Config(_Strict):
@@ -307,19 +281,15 @@ class Config(_Strict):
     server: ServerConfig = Field(default_factory=ServerConfig)
     ring: RingConfig
     ntfy: NtfyConfig | None = None
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
     devices: dict[str, DeviceConfig] = Field(default_factory=dict)
     default_target: str | None = None
     """Device or room used for target 'here' when nothing else decides it."""
     media_sources: dict[str, MediaSourceConfig] = Field(default_factory=dict)
     tesla: TeslaConfig | None = None
     llm: LlmConfig | None = None
-    notes_dir: Path | None = None
     allow_exec: bool = False
     notify_on_error: bool = True
-    modes: list[str] = Field(default_factory=lambda: ["default"], min_length=1)
-    macros: dict[str, Steps] = Field(default_factory=dict)
-    rules: list[RuleConfig] = Field(default_factory=list)
-    intents: list[IntentConfig] = Field(default_factory=list)
 
     @field_validator("timezone")
     @classmethod
@@ -339,12 +309,6 @@ class Config(_Strict):
         overlap = set(self.devices) & rooms
         if overlap:
             raise ValueError(f"names used as both device and room: {sorted(overlap)}")
-        if len(set(self.modes)) != len(self.modes):
-            raise ValueError("modes must be unique")
-        for rule in self.rules:
-            for m in rule.when.mode or []:
-                if m not in self.modes:
-                    raise ValueError(f"rule {rule.name!r} references unknown mode {m!r}")
         return self
 
     @property

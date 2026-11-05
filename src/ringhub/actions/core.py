@@ -105,18 +105,6 @@ async def wait(p: WaitParams, rt: Runtime, v: Vars) -> None:
     await asyncio.sleep(parse_duration(p.duration).total_seconds())
 
 
-class RunParams(Params):
-    macro: str
-
-
-@action("run", RunParams, primary="macro")
-async def run_macro(p: RunParams, rt: Runtime, v: Vars) -> None:
-    steps = rt.config.macros.get(p.macro)
-    if steps is None:
-        raise ActionError(f"unknown macro {p.macro!r}")
-    await rt.executor.run(steps, v, depth=v.get("_depth", 0) + 1)
-
-
 class ParallelParams(Params):
     do: list[Any]
 
@@ -162,36 +150,7 @@ async def schedule_cancel(p: CancelParams, rt: Runtime, v: Vars) -> Vars:
     return {"cancelled": await rt.scheduler.cancel(p.id)}
 
 
-# ---------------------------------------------------------------------------- modes / state
-
-
-class ModeSetParams(Params):
-    mode: str
-
-
-@action("mode.set", ModeSetParams, primary="mode")
-async def mode_set(p: ModeSetParams, rt: Runtime, v: Vars) -> Vars:
-    if p.mode not in rt.config.modes:
-        raise ActionError(f"unknown mode {p.mode!r}; configured: {rt.config.modes}")
-    await rt.store.set("mode", p.mode)
-    return {"mode": p.mode}
-
-
-class ModeCycleParams(Params):
-    modes: list[str] | None = None
-    """Subset/order to cycle through; defaults to all configured modes."""
-
-
-@action("mode.cycle", ModeCycleParams)
-async def mode_cycle(p: ModeCycleParams, rt: Runtime, v: Vars) -> Vars:
-    order = p.modes or rt.config.modes
-    unknown = set(order) - set(rt.config.modes)
-    if unknown:
-        raise ActionError(f"unknown modes {sorted(unknown)}")
-    current = await rt.mode()
-    nxt = order[(order.index(current) + 1) % len(order)] if current in order else order[0]
-    await rt.store.set("mode", nxt)
-    return {"mode": nxt}
+# ---------------------------------------------------------------------------- state
 
 
 class StateSetParams(Params):
@@ -201,8 +160,8 @@ class StateSetParams(Params):
 
 @action("state.set", StateSetParams)
 async def state_set(p: StateSetParams, rt: Runtime, v: Vars) -> Vars:
-    if p.key == "mode":
-        raise ActionError("use mode.set to change the mode")
+    if p.key in ("mode_override", "attention", "where_am_i_at") or p.key.startswith("ctx."):
+        raise ActionError(f"state key {p.key!r} is managed by the hub")
     await rt.store.set(p.key, p.value)
     state = dict(v.get("state", {}))
     state[p.key] = p.value

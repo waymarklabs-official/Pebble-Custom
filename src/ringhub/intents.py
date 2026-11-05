@@ -1,16 +1,8 @@
-"""Deterministic voice intent matching.
-
-Regexes over a normalized transcript: fast, offline, predictable, and debuggable from the
-event log. The optional LLM fallback only runs when nothing here matches.
-"""
+"""Transcript normalization shared by phrase matching, questions and the reminder parser."""
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
-from typing import Any
-
-from .config import IntentConfig
 
 _UNITS = {
     "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
@@ -47,31 +39,3 @@ def normalize(text: str) -> str:
         t = pattern.sub(repl, t)
     t = _NUMBER_RE.sub(_numberize, t)
     return re.sub(r"\s+", " ", t).strip()
-
-
-@dataclass(frozen=True, slots=True)
-class IntentMatch:
-    intent: IntentConfig
-    groups: dict[str, Any]
-    text: str
-
-
-class IntentRouter:
-    def __init__(self, intents: list[IntentConfig]) -> None:
-        self.intents = intents
-        self._compiled = [
-            (intent, [re.compile(p, re.IGNORECASE) for p in intent.match]) for intent in intents
-        ]
-
-    def match(self, transcript: str) -> IntentMatch | None:
-        text = normalize(transcript)
-        for intent, patterns in self._compiled:
-            for pattern in patterns:
-                m = pattern.search(text)
-                if m:
-                    groups = {k: v for k, v in m.groupdict().items() if v is not None}
-                    return IntentMatch(intent=intent, groups=groups, text=text)
-        return None
-
-    def by_name(self, name: str) -> IntentConfig | None:
-        return next((i for i in self.intents if i.name == name), None)
