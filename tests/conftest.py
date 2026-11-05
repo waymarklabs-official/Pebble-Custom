@@ -139,6 +139,43 @@ class NtfyMock:
         self.clear.calls.clear()
 
 
+_SEEDED: dict[bool, bytes] = {}
+
+
+def preseed(cfg: Config) -> None:
+    """First boot, done once per test session: copy a database already holding the default
+    catalog into ``cfg``'s data dir (unless one exists). The seed only depends on whether Tesla
+    is configured, and building it per test would dominate the suite's run time. First boot
+    itself is still exercised by the tests that opt out (``seeded=False``)."""
+    path = cfg.server.data_dir / "ringhub.sqlite3"
+    if path.exists():
+        return
+    key = cfg.tesla is not None
+    if key not in _SEEDED:
+        import asyncio
+        import tempfile
+        from concurrent.futures import ThreadPoolExecutor
+
+        from ringhub.catalog import Catalog
+        from ringhub.seed import seed_if_empty
+        from ringhub.store import Store
+
+        def build() -> bytes:
+            with tempfile.TemporaryDirectory() as tmp:
+                db = Path(tmp) / "seed.sqlite3"
+                store = Store(db)
+                try:
+                    assert asyncio.run(seed_if_empty(Catalog(store), cfg))
+                finally:
+                    store.close()
+                return db.read_bytes()
+
+        with ThreadPoolExecutor(1) as pool:  # works whether or not an event loop is running here
+            _SEEDED[key] = pool.submit(build).result()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(_SEEDED[key])
+
+
 @pytest.fixture
 def ntfy() -> Any:
     import respx
@@ -160,6 +197,8 @@ async def make_runtime(make_config: Callable[..., Config], ntfy: NtfyMock) -> An
 
     async def factory(cfg: Config | None = None, *, seed: bool = True) -> Runtime:
         cfg = cfg or make_config()
+        if seed:
+            preseed(cfg)
         store = Store(cfg.server.data_dir / "ringhub.sqlite3")
         client = httpx.AsyncClient(timeout=5)
         rt = Runtime(cfg, store, client, link_secret=LINK_SECRET)
@@ -186,8 +225,11 @@ def make_client(make_config: Callable[..., Config], ntfy: NtfyMock) -> Any:
 
     stack = ExitStack()
 
-    def factory(cfg: Config | None = None, **kwargs: Any) -> TestClient:
-        return stack.enter_context(TestClient(create_app(cfg or make_config()), **kwargs))
+    def factory(cfg: Config | None = None, *, seeded: bool = True, **kwargs: Any) -> TestClient:
+        cfg = cfg or make_config()
+        if seeded:
+            preseed(cfg)
+        return stack.enter_context(TestClient(create_app(cfg), **kwargs))
 
     yield factory
     stack.close()
@@ -207,12 +249,12 @@ def ring_event(gesture: Any, *, transcript: str | None = None, at: float | None 
                      occurred_at=occurred, transcript=transcript, audio_path=audio, sequence=(g,))
 
 
-async def eventually(check: Callable[[], Any], timeout: float = 3.0) -> Any:
+async def eventually(check: Callable[[], Any], within: float = 3.0) -> Any:
     """Poll an (a)sync predicate until it returns something truthy (no fixed sleeps)."""
     import asyncio
     import inspect
 
-    deadline = time.monotonic() + timeout
+    deadline = time.monotonic() + within
     while True:
         result = check()
         if inspect.isawaitable(result):
@@ -224,9 +266,9 @@ async def eventually(check: Callable[[], Any], timeout: float = 3.0) -> Any:
         await asyncio.sleep(0.01)
 
 
-def wait_until(check: Callable[[], Any], timeout: float = 3.0) -> Any:
+def wait_until(check: Callable[[], Any], within: float = 3.0) -> Any:
     """Synchronous twin of :func:`eventually` for TestClient-based tests."""
-    deadline = time.monotonic() + timeout
+    deadline = time.monotonic() + within
     while True:
         result = check()
         if result:
@@ -234,3 +276,34 @@ def wait_until(check: Callable[[], Any], timeout: float = 3.0) -> Any:
         if time.monotonic() > deadline:
             raise AssertionError("condition not met in time")
         time.sleep(0.01)
+
+
+def shared_app_client(root: Path) -> Any:
+    """Context manager: a respx-mocked app (same config as ``make_config()``) for a class-scoped
+    fixture. Only for tests that tolerate shared state (auth checks, rejected writes)."""
+    from contextlib import contextmanager
+
+    import respx
+    from fastapi.testclient import TestClient
+
+    from ringhub.app import create_app
+
+    @contextmanager
+    def cm() -> Any:
+        doc = {
+            "timezone": "America/Chicago",
+            "server": {"data_dir": str(root / "data"), "admin_token": ADMIN, "context_token": CONTEXT,
+                       "public_url": "https://hub.test"},
+            "ring": {"secrets": {"default": SECRET}, "combo_window_ms": 150},
+            "ntfy": {"url": "https://ntfy.test", "topic": "ring"},
+        }
+        path = root / "config.yaml"
+        path.write_text(yaml.safe_dump(doc))
+        cfg = load_config(path)
+        preseed(cfg)
+        with respx.mock(assert_all_called=False) as router:
+            NtfyMock(router)
+            with TestClient(create_app(cfg)) as client:
+                yield client
+
+    return cm()

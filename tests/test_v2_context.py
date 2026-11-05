@@ -103,7 +103,7 @@ async def test_late_leave_of_old_place_does_not_clear_newer_place(ctx: tuple[Con
 
 
 async def test_leave_of_other_place_is_never_debounced(ctx: tuple[Context, Recorder]) -> None:
-    c, rec = ctx
+    c, _ = ctx
     await c.arrive("work", at=T0)
     assert await c.leave("gym", at=T0 + 1) is not None  # jitter only applies to the current place
     assert (await c.snapshot())["place"] == "work"

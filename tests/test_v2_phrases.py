@@ -35,7 +35,8 @@ def test_whole_utterance_must_match(said: str) -> None:
 
 
 def test_text_slot_takes_the_rest() -> None:
-    assert match("tell {who} i'm running late", "Tell Sarah and Bob I’m running late") == {"who": "sarah and bob"}
+    curly = "Tell Sarah and Bob I\u2019m running late"  # iOS dictation uses a curly apostrophe
+    assert match("tell {who} i'm running late", curly) == {"who": "sarah and bob"}
     assert match("tell {who} i'm running late", "tell i'm running late") is None  # slot can't be empty
 
 

@@ -39,7 +39,8 @@ def test_slugify() -> None:
 
 
 def test_place_alias_normalization_and_spoken_names() -> None:
-    p = Place.model_validate({"id": "the_office", "name": "Work HQ", "aliases": [" The Office ", "office", "OFFICE", ""]})
+    p = Place.model_validate({"id": "the_office", "name": "Work HQ",
+                              "aliases": [" The Office ", "office", "OFFICE", ""]})
     assert p.aliases == ["office", "the office"]
     assert p.spoken() == {"the office", "work hq", "office"}
 

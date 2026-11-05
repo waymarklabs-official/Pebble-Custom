@@ -389,8 +389,13 @@ async def test_time_reminder_fires_via_scheduler_with_signed_buttons(rt: Runtime
         assert not rt.links.verify(other, q["exp"][0], q["sig"][0])  # a link authorizes one action only
     assert ADMIN not in str(push) and CONTEXT not in str(push)
     assert (await rt.reminders.get(r.id)).status == "fired"  # type: ignore[union-attr]
-    nag = {j.id: j for j in await rt.scheduler.pending()}[f"nag:{r.id}"]
+    # the push goes out first; the follow-up nag is scheduled right after it
+    nag = await eventually(lambda: _job(rt, f"nag:{r.id}"))
     assert nag.run_at == pytest.approx(time.time() + NAG_AFTER.total_seconds(), abs=5)
+
+
+async def _job(rt: Runtime, job_id: str) -> Any:
+    return next((j for j in await rt.scheduler.pending() if j.id == job_id), None)
 
 
 async def test_double_fire_is_idempotent(rt: Runtime, ntfy: NtfyMock) -> None:

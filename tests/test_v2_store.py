@@ -203,7 +203,7 @@ async def test_fts_query_cannot_inject_syntax(notes: Notes, hostile: str) -> Non
 
 async def test_fts_operators_are_searched_as_words(notes: Notes) -> None:
     hits = await notes.search("near field reader")
-    assert [h.text[:4] for h in hits][0] == "Idea"
+    assert hits and hits[0].text.startswith("Idea")
     # "and"/"or"/"not" are stop words or plain terms, never boolean operators
     assert fts_query("dentist AND garage") == '"dentist"* OR "garage"*'
     assert fts_query("NOT dentist") == '"not"* OR "dentist"*'
