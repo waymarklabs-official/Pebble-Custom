@@ -67,7 +67,7 @@ def default_catalog(config: Config) -> dict[str, list[dict[str, Any]]]:
          "bindings": {"click": "hand_raise", "double-click": "bathroom"}},
         {"id": "leaving", "name": "Heading out", "icon": "🚪", "color": "#d93025",
          "when": {"recently": {"event": "leave", "place": "home", "within_minutes": 10}},
-         "bindings": {"click": leaving_click, "double-click": "locked_up"}},
+         "bindings": {"click": leaving_click, "double-click": "locked_up" if car else "list"}},
         {"id": "morning", "name": "Morning", "icon": "☀️", "color": "#f9ab00",
          "when": {"places": ["home"], "time": {"after": "05:00", "before": "10:30"}},
          "bindings": {"click": "took_meds", "double-click": "car" if car else "list"}},

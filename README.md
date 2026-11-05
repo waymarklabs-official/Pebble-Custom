@@ -23,6 +23,7 @@ raise your hand at work. Build your own skills and modes in a dashboard on your 
 | *hold:* "when I get home take the chicken out" | 📍 Fires the moment your phone says you're home. |
 | *hold:* "remind me at 7 to call mom" | ⏰ 7:00 pm. When it fires: **click** = done, **double** = snooze. |
 | *hold:* "what did I say about the cabin?" | 🔎 "the wifi password at the cabin is lakeside42 — Tue 3:12 pm" |
+| *hold:* "what did I note at the office?" | 📍 The last few things you said there. |
 | *hold:* "did I take my meds?" | ✅ "Yes — 'Took meds ✓' at 8:04 am" |
 | *hold:* "where did I park?" | 🚗 Saved automatically when the car's Bluetooth disconnected, with a Maps link. |
 | *click, at home before 10:30* | 💊 Took meds ✓ (Morning mode) |
@@ -59,7 +60,7 @@ or CDN.
 
 - **Now**: active mode and why, what each gesture does right now, "try it" buttons, upcoming
   reminders, recent captures, override.
-- **Modes**: drag to prioritize, write conditions in plain language, pick a skill per gesture.
+- **Modes**: order by priority, write conditions in plain language, pick a skill per gesture.
 - **Skills**: create from templates (mark the moment, log something, push to a topic, webhook,
   car, TV…) or write custom steps. Add voice phrases such as `tell {who} i'm running late`.
 - **Memory**: search every note, manage reminders.

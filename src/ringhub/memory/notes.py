@@ -79,7 +79,7 @@ class Notes:
         return _row(row) if row else None
 
     async def recent(self, limit: int = 20, *, kinds: list[str] | None = None,
-                     since: float | None = None) -> list[Note]:
+                     since: float | None = None, place: str | None = None) -> list[Note]:
         where: list[str] = ["1=1"]
         args: list[Any] = []
         if kinds:
@@ -88,6 +88,9 @@ class Notes:
         if since is not None:
             where.append("created_at >= ?")
             args.append(since)
+        if place is not None:
+            where.append("place = ?")
+            args.append(place)
         sql = f"SELECT {_COLS} FROM notes WHERE {' AND '.join(where)} ORDER BY created_at DESC, id DESC LIMIT ?"
         rows = await self._store.run(lambda db: db.execute(sql, (*args, limit)).fetchall())
         return [_row(r) for r in rows]

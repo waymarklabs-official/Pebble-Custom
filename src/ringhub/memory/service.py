@@ -44,6 +44,8 @@ _Q_DID = re.compile(r"^(?:did|have) i (?:already )?(?P<what>.+?)(?: today)?$")
 _Q_ABOUT = re.compile(r"\b(?:what did i (?:say|note|write|record) (?:about|on|regarding)|"
                       r"find (?:my )?(?:notes? )?(?:about|on|for)|search (?:my notes )?for|"
                       r"what was (?:the|that) (?:thing|idea|note) (?:about|for))\s+(?P<q>.+)$")
+_Q_AT = re.compile(r"\bwhat did i (?:say|note|save|write|capture|record|jot down)(?: while i was)? (?:at|in) "
+                   r"(?:the |my )?(?P<place>[\w' ]+?)(?: today| yesterday| recently)?$")
 _Q_LAST = re.compile(r"\b(?:what (?:was|were) my last|read (?:me )?my (?:last|latest|recent))\b"
                      r"(?: (?P<n>\d+))? ?(?:notes?|thoughts?|captures?)?")
 
@@ -206,6 +208,9 @@ class Memory:
         m = _Q_ABOUT.search(q)
         if m:
             return await self.search_summary(m.group("q"))
+        m = _Q_AT.search(q)
+        if m:
+            return await self.place_summary(m.group("place"))
         m = _Q_LAST.search(q)
         if m and ("note" in q or "thought" in q or "capture" in q or "last" in q):
             return await self.recent_summary(int(m.group("n") or 3))
@@ -252,6 +257,19 @@ class Memory:
             return f"🔎 Nothing found for “{_clip(query, 40)}”."
         lines = [f"• {_clip(n.text, 70)} — {self._when(n.created_at)}" for n in hits]
         return "🔎 " + "\n".join(lines)
+
+    async def place_summary(self, spoken: str, limit: int = 3) -> str:
+        """"What did I note at the gym?" -> the latest notes said there."""
+        aliases = await self.place_aliases()
+        key = spoken.strip().removeprefix("the ").removeprefix("my ")
+        place = aliases.get(key) or aliases.get(spoken.strip())
+        if place is None:
+            return f"📍 I don't know a place called “{_clip(spoken, 30)}”."
+        notes = await self.rt.notes.recent(limit, kinds=["note", "journal", "moment", "reminder"], place=place)
+        label = await self.place_label(place)
+        if not notes:
+            return f"📍 Nothing saved at {label} yet."
+        return f"📍 At {label}:\n" + "\n".join(f"• {_clip(n.text, 70)} — {self._when(n.created_at)}" for n in notes)
 
     async def recent_summary(self, count: int = 3) -> str:
         notes = await self.rt.notes.recent(max(1, min(count, 10)), kinds=["note", "journal", "moment", "reminder"])
