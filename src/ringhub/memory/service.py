@@ -54,6 +54,8 @@ _Q_AT = re.compile(r"^what did i (?:say|note|save|write|capture|record|jot down)
                    r"(?:the |my )?(?P<place>[\w' ]+?)(?: today| yesterday| recently)?$")
 _Q_LAST = re.compile(r"^(?:what (?:was|were) my last|read (?:me )?my (?:last|latest|recent))"
                      r"(?: (?P<n>\d+))?(?: (?:notes?|thoughts?|captures?))?$")
+_UNDO = re.compile(r"^(?:never ?mind|cancel(?: that)?|scratch that|undo(?: that)?|forget (?:it|that)|delete that)$")
+_NOISE = re.compile(r"^(?:ok|okay|um+|uh+|hmm+|hm|test(?:ing)?|hello|hi|yes|no|nothing|thanks|thank you)$")
 LATE_REFERENCE_LIMIT = 7 * 86400
 """Voice can arrive late (ring offline); trust its recorded time up to a week back."""
 
@@ -144,6 +146,15 @@ class Memory:
             return CaptureResult("note", "🎙️ Voice memo saved (no transcript)", note=note)
         if not text:
             return CaptureResult("empty", "🤔 I didn't catch anything — nothing saved.")
+        spoken = _FILLER.sub("", normalize(text)).strip(" .!?")
+        if _UNDO.match(spoken):
+            undo = (await self.attention_slots()).get("capture")
+            if undo and isinstance(undo.get("ref"), dict):
+                return CaptureResult("answer", await self.undo_last_capture(undo["ref"]))
+            return CaptureResult("answer", "🤷 Nothing recent to undo.")
+        if not spoken or _NOISE.match(spoken):
+            # An accidental hold ("ok", "um", "test") shouldn't litter your notes.
+            return CaptureResult("empty", "👍 Nothing saved.")
         try:
             answer = await self.answer(text)
             if answer is not None:
@@ -260,13 +271,24 @@ class Memory:
         return None
 
     async def where_parked(self) -> str:
-        note = await self.rt.notes.latest_matching("log", "Parked")
-        if note is None:
-            return "🚗 I don't have a parking spot saved yet."
-        loc = note.meta.get("location") or {}
-        link = f"\nhttps://maps.apple.com/?q=Car&ll={loc['lat']},{loc['lon']}" if "lat" in loc else ""
-        where = f" at {await self.place_label(note.place)}" if note.place else ""
-        return f"🚗 {note.text}{where} · {self._when(note.created_at)}{link}"
+        """The automatic "Parked" log (car Bluetooth disconnect) and/or what you *said* about
+        parking in the last day, most recent first; with a Maps link when a position is known."""
+        logged = await self.rt.notes.latest_matching("log", "Parked")
+        recent = await self.rt.notes.search("parked park parking", 5, since=time.time() - 86400,
+                                            exclude_kinds=["log", "reminder"])
+        said = recent[0] if recent else None
+        if logged is None and said is None:
+            return "🚗 I don't have a parking spot saved yet. Hold and say where you parked next time."
+        link = ""
+        if logged is not None:
+            loc = logged.meta.get("location") or {}
+            if isinstance(loc.get("lat"), int | float) and isinstance(loc.get("lon"), int | float):
+                link = f"\nhttps://maps.apple.com/?q=Car&ll={float(loc['lat'])!r},{float(loc['lon'])!r}"
+        if said is not None and (logged is None or said.created_at >= logged.created_at - 600):
+            return f"🚗 You said: “{_clip(said.text, 90)}” · {self._when(said.created_at)}{link}"
+        assert logged is not None
+        where = f" at {await self.place_label(logged.place)}" if logged.place else ""
+        return f"🚗 {logged.text}{where} · {self._when(logged.created_at)}{link}"
 
     async def list_summary(self, limit: int = 8) -> str:
         items = await self.rt.reminders.open()

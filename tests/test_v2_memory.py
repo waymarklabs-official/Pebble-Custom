@@ -199,7 +199,7 @@ async def test_moment_records_place_and_fresh_location(rt: Runtime, engine: Engi
 
 async def test_where_did_i_park_without_a_spot(rt: Runtime, engine: Engine, ntfy: NtfyMock) -> None:
     await hold(engine, "Where did I park?")
-    assert ntfy.last()["message"] == "🚗 I don't have a parking spot saved yet."
+    assert ntfy.last()["message"].startswith("🚗 I don't have a parking spot saved yet.")
 
 
 async def test_where_did_i_park_with_an_apple_maps_link(rt: Runtime, engine: Engine, ntfy: NtfyMock) -> None:

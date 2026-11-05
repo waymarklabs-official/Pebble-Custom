@@ -128,7 +128,7 @@ it. A leave within 4 minutes of arriving is ignored, and duplicate arrivals with
 (Shortcuts plus OwnTracks plus Wi-Fi) collapse into one. A later re-arrival at the "same" place
 still fires pending arrive reminders, because the leave may simply have been missed.
 
-The dashboard's Places page generates the exact URL and header for each automation, with copy
+The dashboard's Setup page generates the exact URL and header for each automation, with copy
 buttons.
 
 ## Memory
@@ -163,8 +163,12 @@ used from the phone.
 
 Pages: **Now** (active mode and why, gesture map, context, next reminders, recent captures, test
 buttons, override), **Modes** (priority order, conditions, bindings), **Skills** (library,
-template forms, phrases, run now), **Memory** (notes search, reminders), **Places** (aliases,
-generated Shortcut setups, context timeline), **Activity**.
+template forms, phrases, run now), **Memory** (notes search, reminders), **Setup** (places and
+aliases, generated Shortcut/OwnTracks setups, what the phone reported, activity, catalog backup,
+sign out / sign out everywhere).
+
+Voice has two more built-in conveniences: *"scratch that"* / *"never mind"* undoes the last
+capture, and accidental holds that hear only filler ("ok", "um") save nothing.
 
 ## Config split
 

@@ -30,7 +30,7 @@ raise your hand at work. Build your own skills and modes in a dashboard on your 
 | *click, just left home* | 🚗 Unlocked and you're at it → trunk opens. Locked or asleep → climate on. |
 | *click, at work* | ✋ Hand raise to your ntfy topic. |
 | *triple* | 🧭 "Morning — at home, 05:00–10:30 · click: Took meds · double: What's on my list". Triple again to switch. |
-| *double, right after a mis-heard capture* | ↩️ Undone. |
+| *double, right after a mis-heard capture* (or say "scratch that") | ↩️ Undone. |
 
 Nothing you say is ever dropped. If it isn't a command, question or reminder, it's a note.
 
@@ -64,7 +64,7 @@ or CDN.
 - **Skills**: create from templates (mark the moment, log something, push to a topic, webhook,
   car, TV…) or write custom steps. Add voice phrases such as `tell {who} i'm running late`.
 - **Memory**: search every note, manage reminders.
-- **Places & phone**: places plus copy-ready iOS Shortcuts / OwnTracks setup with your URLs and
+- **Setup**: places, copy-ready iOS Shortcuts / OwnTracks setup with your URLs and
   token.
 
 ## Get started

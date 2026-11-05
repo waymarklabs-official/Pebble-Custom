@@ -212,7 +212,7 @@ def _strip(text: str, spans: list[tuple[int, int]]) -> str:
     for start, end in sorted(spans, reverse=True):
         text = text[:start] + " " + text[end:]
     text = re.sub(r"\s+", " ", text).strip(" ,.")
-    text = re.sub(r"^(?:(?:and|to|that|about|please|then|ok|okay|hey)\b ?)+", "", text)
+    text = re.sub(r"^(?:(?:and|to|that|about|please|then|ok|okay|hey|um|uh|so|oh|well|alright)\b ?)+", "", text)
     return re.sub(r"(?:\b(?:to|and|please|then)\b ?)+$", "", text).strip(" ,.")
 
 

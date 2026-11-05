@@ -261,3 +261,36 @@ async def test_mode_bound_combo_still_resolves(rt: Runtime) -> None:
     await rt.catalog.replace_all(data)
     mode = await rt.catalog.mode("everywhere")
     assert isinstance(mode, Mode) and mode.bindings["double-click+click"] == "list"
+
+
+
+# ----------------------------------------------------------------------------- product pass
+
+
+async def test_leading_filler_is_not_part_of_the_reminder(rt: Runtime, engine: Engine) -> None:
+    await hold(engine, "Um, remind me in ten minutes to take the pizza out")
+    [r] = await rt.reminders.open()
+    assert r.text == "Take the pizza out"
+
+
+async def test_where_did_i_park_uses_what_you_said(rt: Runtime, engine: Engine, ntfy: NtfyMock) -> None:
+    await hold(engine, "I parked on level 4 near the elevators")
+    await hold(engine, "Where did I park?")
+    assert ntfy.last()["message"].startswith("🚗 You said: “I parked on level 4 near the elevators”")
+
+
+async def test_accidental_holds_are_not_saved(rt: Runtime, engine: Engine, ntfy: NtfyMock) -> None:
+    for noise in ("ok", "Um.", "test"):
+        await hold(engine, noise)
+    assert await rt.notes.recent(5) == []
+    assert ntfy.last()["message"] == "👍 Nothing saved."
+
+
+async def test_scratch_that_undoes_the_last_capture(rt: Runtime, engine: Engine, ntfy: NtfyMock) -> None:
+    await hold(engine, "remind me at 7 to call the bnak")
+    await hold(engine, "scratch that")
+    assert await rt.reminders.open() == []
+    assert await rt.notes.recent(5) == []
+    assert ntfy.last()["message"].startswith("↩️ Undone")
+    await hold(engine, "never mind")
+    assert ntfy.last()["message"] == "🤷 Nothing recent to undo."

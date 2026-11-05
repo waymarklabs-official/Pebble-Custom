@@ -65,7 +65,7 @@ reminder. When it arrives, click the ring to mark it done.
 
 ## 4. Tell it where you are
 
-The dashboard's **Places & phone** page generates every URL below with copy buttons. Create your
+The dashboard's **Setup** page generates every URL below with copy buttons. Create your
 places there first (Home, Work and Car exist by default). The aliases are what you'd *say*
 ("the office").
 
@@ -74,7 +74,7 @@ places there first (Home, Work and Car exist by default). The aliases are what y
 Shortcuts app → **Automation** → **+** → pick a trigger → **Run Immediately** → add **Get
 Contents of URL**:
 
-- URL: shown on the Places page, for example `https://<public_url>/api/v1/context/arrive/home`
+- URL: shown on the Setup page, for example `https://<public_url>/api/v1/context/arrive/home`
 - Method: **POST**
 - Headers: `Authorization` = `Bearer <RINGHUB_CONTEXT_TOKEN>`
 
@@ -106,7 +106,7 @@ OwnTracks reports transitions silently and keeps working in the background.
 1. Install OwnTracks → Settings → Mode **HTTP**.
 2. URL `https://<public_url>/api/v1/owntracks`, Authentication on, username anything,
    password `RINGHUB_CONTEXT_TOKEN`.
-3. Give your places latitude/longitude on the Places page. The hub sends them to OwnTracks as
+3. Give your places latitude/longitude (**Setup → Places**). The hub sends them to OwnTracks as
    regions automatically (at most 20, the iOS limit), and OwnTracks enter/leave events become
    arrive/leave.
 
@@ -157,5 +157,5 @@ Android/Fire TV (ADB) and Roku (ECP) still work as a **TV remote** skill templat
 | Shortcut automation gets `401` | Header must be exactly `Authorization: Bearer <context token>`. |
 | No pushes at all | Check `ntfy.topic` and that the app is subscribed. `ringhub check` shows the config. |
 | Reminder buttons do nothing | Set `server.public_url`. The phone must reach that URL. iOS opens the ntfy app first. |
-| Mode didn't change on arrival | **Places & phone → Timeline** shows what the phone reported, and when. |
+| Mode didn't change on arrival | **Setup → What your phone reported** shows each report and when it arrived. |
 | "I don't know 'gym' yet" | Add a place called Gym, or add "gym" as an alias to an existing place. |
