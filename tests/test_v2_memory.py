@@ -14,7 +14,7 @@ import pytest
 
 from ringhub.config import Config
 from ringhub.engine import Engine
-from ringhub.memory.service import ATTENTION_KEY, NAG_AFTER, SNOOZE
+from ringhub.memory.service import ATTENTION_CAPTURE, ATTENTION_REMINDER, NAG_AFTER, SNOOZE
 from ringhub.runtime import Runtime
 from ringhub.vehicle import VehicleState
 
@@ -71,7 +71,7 @@ async def test_plain_speech_is_saved_as_a_note_under_the_current_place(rt: Runti
     push = ntfy.last()
     assert push["message"] == "📝 The parking garage code is 4417 · Work"
     assert push["topic"] == "ring" and push["priority"] == 3
-    assert await rt.store.get(ATTENTION_KEY) == {"kind": "capture", "ref": {"note": note.id},
+    assert await rt.store.get(ATTENTION_CAPTURE) == {"kind": "capture", "ref": {"note": note.id},
                                                  "at": pytest.approx(time.time(), abs=5)}
     assert await rt.reminders.open() == []
 
@@ -121,10 +121,6 @@ async def test_unknown_place_is_flagged(rt: Runtime, engine: Engine, ntfy: NtfyM
     assert "I don't know “gym” yet" in ntfy.last()["message"]
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG: parse_reminder() builds the reminder text from normalize(transcript), which lowercases everything, "
-    "so 'remind me to call Bob' is pushed as '⏰ Call bob' (proper nouns/acronyms lost on the watch). Strip "
-    "spans from the original-cased transcript, or map normalized spans back to it."))
 async def test_reminder_text_keeps_original_casing(rt: Runtime) -> None:
     result = await rt.memory.capture("Remind me to call Bob about the NASA badge", said_at=time.time(),
                                      place=None, mode=None)
@@ -135,7 +131,7 @@ async def test_questions_are_answered_not_saved(rt: Runtime, engine: Engine, ntf
     await hold(engine, "What's on my list?")
     assert ntfy.last()["message"] == "✅ Nothing on your list."
     assert await rt.notes.recent(5) == []
-    assert await rt.store.get(ATTENTION_KEY) is None  # nothing to undo
+    assert await rt.store.get(ATTENTION_CAPTURE) is None  # nothing to undo
 
 
 async def test_voice_memo_without_transcript_keeps_the_audio(rt: Runtime, engine: Engine, ntfy: NtfyMock,
@@ -222,10 +218,6 @@ async def test_where_did_i_park_without_coordinates_has_no_link(rt: Runtime) -> 
     assert answer is not None and answer.startswith("🚗 Parked · ") and "maps.apple.com" not in answer
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG: memory/service.py _Q_PARKED matches 'where did I leave/left ...' for anything, so 'where did I "
-    "leave my keys' answers with the parking spot instead of searching notes. Restrict leave/left to "
-    "'the/my car' (or end of utterance)."))
 async def test_where_did_i_leave_my_keys_is_not_a_parking_question(rt: Runtime) -> None:
     await rt.notes.add("Keys are in the blue bowl", created_at=time.time())
     answer = await rt.memory.answer("where did I leave my keys")
@@ -322,7 +314,7 @@ async def test_arrive_reminder_fires_once(rt: Runtime, ntfy: NtfyMock) -> None:
     await rt.context.leave("home", at=t + 600)
     await rt.context.arrive("home", at=t + 1200)
     assert len(ntfy.bodies) == 1
-    assert (await rt.store.get(ATTENTION_KEY))["ref"] == r.id
+    assert (await rt.store.get(ATTENTION_REMINDER))["ref"] == r.id
 
 
 async def test_arrive_elsewhere_does_not_fire(rt: Runtime, ntfy: NtfyMock) -> None:
@@ -408,11 +400,11 @@ async def test_double_fire_is_idempotent(rt: Runtime, ntfy: NtfyMock) -> None:
 async def test_nag_only_when_unacknowledged(rt: Runtime, ntfy: NtfyMock) -> None:
     r = await rt.reminders.add("Water the plants", "time", due_at=time.time())
     await rt.memory.fire(r.id)
-    await rt.memory.clear_attention()
+    await rt.memory.clear_attention("reminder")
     await rt.memory.nag(r.id)
     assert ntfy.last()["title"] == "⏰ Still: Water the plants"
     assert ntfy.last()["sequence_id"] == f"rem-{r.id}"
-    assert (await rt.store.get(ATTENTION_KEY))["ref"] == r.id  # the ring answers it again
+    assert (await rt.store.get(ATTENTION_REMINDER))["ref"] == r.id  # the ring answers it again
     await rt.memory.done(r.id)
     assert f"nag:{r.id}" not in {j.id for j in await rt.scheduler.pending()}
     ntfy.reset()
@@ -474,7 +466,7 @@ async def test_click_after_fire_marks_done(rt: Runtime, engine: Engine, ntfy: Nt
     assert r is not None and r.status == "done"
     assert ntfy.last()["message"] == "✅ Done · Take out the trash" and ntfy.last()["priority"] == 2
     assert ntfy.clear.called
-    assert await rt.store.get(ATTENTION_KEY) is None
+    assert await rt.store.get(ATTENTION_REMINDER) is None
     assert not [j for j in await rt.scheduler.pending() if rid in j.id]
     events = await rt.store.recent_events(5)
     assert events[0]["detail"] == f"reminder {rid} done" and events[0]["status"] == "ok"
@@ -491,13 +483,13 @@ async def test_double_after_fire_snoozes(rt: Runtime, engine: Engine, ntfy: Ntfy
     jobs = {j.id for j in await rt.scheduler.pending()}
     assert f"reminder:{rid}" in jobs and f"nag:{rid}" not in jobs
     assert ntfy.last()["message"] == "😴 Snoozed 10 min · Take out the trash"
-    assert await rt.store.get(ATTENTION_KEY) is None
+    assert await rt.store.get(ATTENTION_REMINDER) is None
 
 
 async def test_attention_expires_after_the_ack_window(rt: Runtime, engine: Engine) -> None:
     rid = await fired(rt)
-    att = await rt.store.get(ATTENTION_KEY)
-    await rt.store.set(ATTENTION_KEY, {**att, "at": time.time() - rt.config.memory.ack_window_seconds - 1})
+    att = await rt.store.get(ATTENTION_REMINDER)
+    await rt.store.set(ATTENTION_REMINDER, {**att, "at": time.time() - rt.config.memory.ack_window_seconds - 1})
     assert await press(engine, "click") == "moment"
     assert (await rt.reminders.get(rid)).status == "fired"  # type: ignore[union-attr]
 
@@ -506,7 +498,7 @@ async def test_attention_falls_through_when_reminder_already_handled(rt: Runtime
     rid = await fired(rt)
     await rt.reminders.mark_done(rid)  # e.g. tapped "Done" in the push without clearing attention
     assert await press(engine, "click") == "moment"
-    assert await rt.store.get(ATTENTION_KEY) is None
+    assert await rt.store.get(ATTENTION_REMINDER) is None
 
 
 async def test_attention_disabled_with_zero_window(make_runtime: Factory, make_config: Callable[..., Config],
@@ -539,8 +531,8 @@ async def test_undo_window_is_short_and_click_never_undoes(rt: Runtime, engine: 
     await hold(engine, "a thought")
     assert await press(engine, "click") == "moment"  # click after a capture is just a click
     assert len(await rt.notes.recent(5, kinds=["note"])) == 1
-    att = await rt.store.get(ATTENTION_KEY)
-    await rt.store.set(ATTENTION_KEY, {**att, "at": time.time() - 31})
+    att = await rt.store.get(ATTENTION_CAPTURE)
+    await rt.store.set(ATTENTION_CAPTURE, {**att, "at": time.time() - 31})
     assert await press(engine, "double-click") == "list"
     assert len(await rt.notes.recent(5, kinds=["note"])) == 1
 
@@ -658,3 +650,27 @@ async def test_no_markdown_dir_writes_nothing(make_runtime: Factory, make_config
     rt = await make_runtime(make_config(memory={}))
     await rt.memory.capture("hello", said_at=time.time(), place=None, mode=None)
     assert not (tmp_path / "vault").exists()
+
+
+
+async def test_capture_after_fire_does_not_steal_click_done(rt: Runtime, engine: Engine) -> None:
+    """Review finding: a note saved right after a reminder fired turned click=Done into the mode skill."""
+    rid = await fired(rt)
+    await hold(engine, "unrelated thought")
+    assert await press(engine, "click") == "reminder-done"
+    assert (await rt.reminders.get(rid)).status == "done"  # type: ignore[union-attr]
+
+
+async def test_double_acts_on_the_most_recent_attention(rt: Runtime, engine: Engine) -> None:
+    rid = await fired(rt)
+    await hold(engine, "oops misheard")
+    assert await press(engine, "double-click") == "undo"  # the capture is newer: undo it
+    assert (await rt.reminders.get(rid)).status == "fired"  # type: ignore[union-attr]
+    assert await press(engine, "double-click") == "reminder-snoozed"  # then the reminder
+
+
+async def test_snoozing_another_reminder_keeps_this_ones_attention(rt: Runtime, engine: Engine) -> None:
+    rid = await fired(rt)
+    other = await rt.reminders.add("Other thing", "none")
+    await rt.memory.snooze(other.id)
+    assert (await rt.store.get(ATTENTION_REMINDER))["ref"] == rid

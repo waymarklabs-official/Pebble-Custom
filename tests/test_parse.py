@@ -32,7 +32,16 @@ def p(text: str):  # type: ignore[no-untyped-def]
     ("remind me on friday to pay rent", (11, 6, 9, 0), "Pay rent"),
     ("remind me friday evening to call grandma", (11, 6, 19, 0), "Call grandma"),
     ("remind me next tuesday to renew parking", (11, 10, 9, 0), "Renew parking"),
-    ("don't let me forget to text Sam later", (11, 3, 17, 10), "Text sam"),
+    ("remind me this friday to pay the rent", (11, 6, 9, 0), "Pay the rent"),
+    ("remind me this tuesday evening to call dad", (11, 3, 19, 0), "Call dad"),
+    ("remind me today at 7 to call mom", (11, 3, 19, 0), "Call mom"),
+    ("remind me on friday at 3 to call the dentist", (11, 6, 15, 0), "Call the dentist"),
+    ("remind me on friday at 8 to stretch", (11, 6, 8, 0), "Stretch"),
+    ("remind me tomorrow at 12 am to take the bins out", (11, 4, 0, 0), "Take the bins out"),
+    ("remind me tomorrow at 12:30 pm to eat", (11, 4, 12, 30), "Eat"),
+    ("remind me on tuesday to water the fern", (11, 10, 9, 0), "Water the fern"),
+    ("remind me at midnight to sleep", (11, 4, 0, 0), "Sleep"),
+    ("don't let me forget to text Sam later", (11, 3, 17, 10), "Text Sam"),
 ])
 def test_time_reminders(text: str, at: tuple[int, int, int, int], body: str) -> None:
     r = p(text)
@@ -81,3 +90,20 @@ def test_plain_notes_are_not_reminders(text: str) -> None:
 def test_time_already_passed_today_falls_back_to_list() -> None:
     r = p("remind me this morning to call the bank")
     assert r is not None and r.trigger.kind == "none"
+
+
+def test_reminder_text_keeps_speaker_casing() -> None:
+    r = p("Remind me to call Bob about the NASA badge")
+    assert r is not None and r.text == "Call Bob about the NASA badge"
+
+
+def test_minutes_are_elapsed_time_across_dst_fall_back() -> None:
+    # 2026-11-01 01:50 CDT; clocks fall back at 02:00 -> 01:00 CST.
+    before = datetime(2026, 11, 1, 1, 50, tzinfo=TZ)
+    r = parse_reminder("remind me in 20 minutes to check the oven", before, PLACES)
+    assert r is not None and r.trigger.at is not None
+    assert r.trigger.at.timestamp() - before.timestamp() == 20 * 60
+    repeated = datetime(2026, 11, 1, 1, 30, fold=1, tzinfo=TZ)  # the second 01:30 (CST)
+    r = parse_reminder("remind me in 20 minutes to check the oven", repeated, PLACES)
+    assert r is not None and r.trigger.at is not None
+    assert r.trigger.at.timestamp() - repeated.timestamp() == 20 * 60

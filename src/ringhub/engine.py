@@ -44,7 +44,9 @@ class Engine:
 
     async def start(self) -> None:
         await self.rt.scheduler.restore()
+        await self.rt.memory.reconcile()
         await self.rt.memory.schedule_digest()
+        await self.rt.context.resume()
         self._worker = asyncio.create_task(self._run(), name="ringhub-engine")
 
     async def stop(self) -> None:
@@ -139,36 +141,33 @@ class Engine:
         return skill_id
 
     async def _attention(self, key: str, event: RingEvent) -> str | None:
-        """Right after a reminder fires (or a capture is saved), the ring answers *that*."""
+        """Right after a reminder fires (or a capture is saved), the ring answers *that*.
+
+        click: marks a just-fired reminder done. double: acts on whichever happened most recently,
+        snoozing the reminder or undoing the capture.
+        """
         rt = self.rt
-        att = await rt.memory.attention()
-        if att is None:
-            return None
-        if att.get("kind") == "reminder":
-            rid = str(att.get("ref"))
-            if key == "click":
-                r = await rt.memory.done(rid)
-                if r is not None:
-                    await rt.feedback.say(f"✅ Done · {r.text}", level="quiet")
-                    await rt.store.log_event(delivery_id=event.delivery_id, gesture="click",
-                                             detail=f"reminder {rid} done", status="ok")
-                    return "reminder-done"
-            else:
-                r = await rt.memory.snooze(rid)
-                if r is not None:
-                    await rt.feedback.say(f"😴 Snoozed 10 min · {r.text}", level="quiet")
-                    await rt.store.log_event(delivery_id=event.delivery_id, gesture="double",
-                                             detail=f"reminder {rid} snoozed", status="ok")
-                    return "reminder-snoozed"
-            await rt.memory.clear_attention()
-            return None
-        if att.get("kind") == "capture" and key == "double-click" and isinstance(att.get("ref"), dict):
-            msg = await rt.memory.undo_last_capture(att["ref"])
+        slots = await rt.memory.attention_slots()
+        reminder, capture = slots.get("reminder"), slots.get("capture")
+        if key == "double-click" and capture and isinstance(capture.get("ref"), dict) and (
+                reminder is None or float(capture["at"]) >= float(reminder["at"])):
+            msg = await rt.memory.undo_last_capture(capture["ref"])
             await rt.feedback.say(msg, level="quiet")
             await rt.store.log_event(delivery_id=event.delivery_id, gesture="double", detail="undo capture",
                                      status="ok")
             return "undo"
-        return None
+        if reminder is None:
+            return None
+        rid = str(reminder.get("ref"))
+        r = await (rt.memory.done(rid) if key == "click" else rt.memory.snooze(rid))
+        if r is None:  # already handled elsewhere (dashboard, push button): forget it, run the mode
+            await rt.memory.clear_attention("reminder", rid)
+            return None
+        done = key == "click"
+        await rt.feedback.say(f"{'✅ Done' if done else '😴 Snoozed 10 min'} · {r.text}", level="quiet")
+        await rt.store.log_event(delivery_id=event.delivery_id, gesture=label(key),
+                                 detail=f"reminder {rid} {'done' if done else 'snoozed'}", status="ok")
+        return "reminder-done" if done else "reminder-snoozed"
 
     async def _report_failure(self, event: RingEvent, key: str, detail: str, err: Exception) -> None:
         if isinstance(err, ActionError):
@@ -177,9 +176,21 @@ class Engine:
             log.exception("%s -> %s crashed", label(key), detail)
         await self.rt.store.log_event(delivery_id=event.delivery_id, gesture=label(key), detail=detail,
                                       status="error", error=str(err))
+        saved = ""
+        if event.gesture.is_voice and (event.transcript or event.audio_path):
+            # Whatever went wrong, never lose what was said.
+            try:
+                await self.rt.notes.add(event.transcript or "(voice memo)", kind="note",
+                                        created_at=event.occurred_at.timestamp(),
+                                        place=await self.rt.context.value_at("place", event.occurred_at.timestamp()),
+                                        audio=str(event.audio_path) if event.audio_path else None,
+                                        source=event.delivery_id)
+                saved = "\nYour words were saved as a note."
+            except Exception:
+                log.exception("could not save fallback note for %s", event.delivery_id)
         if self.rt.config.notify_on_error:
             # Silent failure is the worst UX for a screenless button: always say something.
-            await self.rt.feedback.say(str(err)[:500], title=f"⚠️ {label(key)} failed", level="error",
+            await self.rt.feedback.say(str(err)[:500] + saved, title=f"⚠️ {label(key)} failed", level="error",
                                        tags=["warning"])
 
 

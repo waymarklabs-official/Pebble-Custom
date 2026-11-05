@@ -160,7 +160,7 @@ class StateSetParams(Params):
 
 @action("state.set", StateSetParams)
 async def state_set(p: StateSetParams, rt: Runtime, v: Vars) -> Vars:
-    if p.key in ("mode_override", "attention", "where_am_i_at") or p.key.startswith("ctx."):
+    if p.key in ("mode_override", "where_am_i_at") or p.key.startswith(("ctx.", "attention.", "secret.", "tesla.")):
         raise ActionError(f"state key {p.key!r} is managed by the hub")
     await rt.store.set(p.key, p.value)
     state = dict(v.get("state", {}))

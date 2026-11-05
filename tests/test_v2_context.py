@@ -67,7 +67,7 @@ async def test_rearrival_after_duplicate_window_reemits(ctx: tuple[Context, Reco
     ev = await c.arrive("home", at=T0 + DUPLICATE_ARRIVE_SECONDS + 1)
     assert ev is not None and ev.previous == "home"  # the leave may simply have been missed
     assert rec.kinds == [("arrive", "home"), ("arrive", "home")]
-    assert (await c.snapshot())["place_since"] == T0 + DUPLICATE_ARRIVE_SECONDS + 1
+    assert (await c.snapshot())["place_since"] == T0  # a repeat report doesn't restart the stay
 
 
 async def test_leave_within_jitter_window_is_ignored(ctx: tuple[Context, Recorder]) -> None:
@@ -109,10 +109,6 @@ async def test_leave_of_other_place_is_never_debounced(ctx: tuple[Context, Recor
     assert (await c.snapshot())["place"] == "work"
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG: Context.arrive accepts an arrival stamped *before* the current place_since and overwrites the "
-    "newer place (a queued OwnTracks 'enter home' delivered after 'arrive work' moves you back home). "
-    "Leave already guards against this; arrive needs the same 'stamp < place_since -> ignore' rule."))
 async def test_stale_arrival_does_not_override_newer_place(ctx: tuple[Context, Recorder]) -> None:
     c, _ = ctx
     await c.arrive("work", at=T0 + 1000)

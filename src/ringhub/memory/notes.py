@@ -39,7 +39,17 @@ def _row(r: tuple[Any, ...]) -> Note:
     return Note(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], json.loads(r[8] or "{}"))
 
 
-def fts_query(text: str) -> str | None:
+# Irregular past tenses the porter stemmer can't connect ("did I take my meds" vs "Took meds ✓").
+_IRREGULAR = {
+    "take": "took", "eat": "ate", "go": "went", "feed": "fed", "give": "gave", "pay": "paid", "buy": "bought",
+    "bring": "brought", "drink": "drank", "send": "sent", "get": "got", "make": "made", "write": "wrote",
+    "sleep": "slept", "put": "put", "leave": "left", "tell": "told", "find": "found", "drive": "drove",
+    "run": "ran", "swim": "swam", "throw": "threw", "wear": "wore", "hide": "hid", "lose": "lost",
+}
+_IRREGULAR_BACK = {v: k for k, v in _IRREGULAR.items()}
+
+
+def fts_query(text: str, *, all_terms: bool = False) -> str | None:
     """Build a safe FTS5 query from free speech: quoted terms, prefix-matched, OR'ed.
 
     "what did I say about the dentist" -> "dentist"*  (stop words dropped). Quoting every
@@ -50,10 +60,16 @@ def fts_query(text: str) -> str | None:
         "of", "to", "for", "and", "or", "on", "in", "at", "it", "that", "this", "any", "find", "notes",
         "note", "tell", "search", "remember", "remind", "something", "anything", "with",
     }
-    terms = [t for t in re.findall(r"[\w']+", text.lower()) if t not in stop and len(t) > 1]
+    terms = [t.replace('"', "") for t in re.findall(r"[\w']+", text.lower()) if t not in stop and len(t) > 1]
     if not terms:
         return None
-    return " OR ".join(f'"{t.replace(chr(34), "")}"*' for t in terms[:8])
+    groups = []
+    for t in dict.fromkeys(terms[:8]):
+        alts = sorted({t, *([_IRREGULAR[t]] if t in _IRREGULAR else []),
+                       *([_IRREGULAR_BACK[t]] if t in _IRREGULAR_BACK else [])})
+        group = " OR ".join(f'"{a}"*' for a in alts)
+        groups.append(f"({group})" if len(alts) > 1 else group)
+    return (" AND " if all_terms else " OR ").join(groups)
 
 
 class Notes:
@@ -95,14 +111,24 @@ class Notes:
         rows = await self._store.run(lambda db: db.execute(sql, (*args, limit)).fetchall())
         return [_row(r) for r in rows]
 
-    async def search(self, text: str, limit: int = 10) -> list[Note]:
-        query = fts_query(text)
+    async def search(self, text: str, limit: int = 10, *, since: float | None = None,
+                     exclude_kinds: list[str] | None = None, all_terms: bool = False) -> list[Note]:
+        """Full-text search. Filters apply *before* the limit, so old notes can't crowd out today's."""
+        query = fts_query(text, all_terms=all_terms)
         if query is None:
             return []
+        where: list[str] = ["notes_fts MATCH ?"]
+        args: list[Any] = [query]
+        if since is not None:
+            where.append("n.created_at >= ?")
+            args.append(since)
+        if exclude_kinds:
+            where.append(f"n.kind NOT IN ({','.join('?' * len(exclude_kinds))})")
+            args.extend(exclude_kinds)
         sql = (f"SELECT {', '.join('n.' + c.strip() for c in _COLS.split(','))} FROM notes_fts f "
-               "JOIN notes n ON n.id = f.rowid WHERE notes_fts MATCH ? "
+               f"JOIN notes n ON n.id = f.rowid WHERE {' AND '.join(where)} "
                "ORDER BY bm25(notes_fts), n.created_at DESC LIMIT ?")
-        rows = await self._store.run(lambda db: db.execute(sql, (query, limit)).fetchall())
+        rows = await self._store.run(lambda db: db.execute(sql, (*args, limit)).fetchall())
         return [_row(r) for r in rows]
 
     async def latest_matching(self, kind: str, text_like: str) -> Note | None:

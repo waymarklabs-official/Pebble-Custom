@@ -168,7 +168,8 @@ async def notes(store: Store) -> Notes:
 @pytest.mark.parametrize("query,expected", [
     ("dentists", "Dentist appointment"),       # porter stemming: plural finds singular
     ("dent", "Dentist appointment"),           # prefix match
-    ("ran", None),                             # stemming is not lemmatization
+    ("ran", "Running shoes"),                  # common irregular verbs map to their base form
+    ("flew", None),                            # ...but stemming is not general lemmatization
     ("running", "Running shoes"),
     ("run", "Running shoes"),
     ("RUNNING", "Running shoes"),              # case-insensitive

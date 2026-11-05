@@ -246,8 +246,13 @@ class Store:
             "vars=excluded.vars",
             (job.id, job.run_at, json.dumps(job.steps), json.dumps(job.vars, default=str))))
 
-    async def delete_job(self, job_id: str) -> bool:
-        cur = await self._run(lambda db: db.execute("DELETE FROM jobs WHERE id = ?", (job_id,)))
+    async def delete_job(self, job_id: str, run_at: float | None = None) -> bool:
+        """Delete a job; with ``run_at``, only that exact instance (not a newer reschedule)."""
+        if run_at is None:
+            cur = await self._run(lambda db: db.execute("DELETE FROM jobs WHERE id = ?", (job_id,)))
+        else:
+            cur = await self._run(lambda db: db.execute(
+                "DELETE FROM jobs WHERE id = ? AND run_at = ?", (job_id, run_at)))
         return cur.rowcount > 0
 
     async def jobs(self) -> list[Job]:

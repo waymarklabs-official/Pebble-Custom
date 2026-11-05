@@ -89,19 +89,21 @@ class Scheduler:
     async def _run(self, job: Job) -> None:
         try:
             await asyncio.sleep(max(0.0, job.run_at - time.time()))
-            await self._store.delete_job(job.id)
-            self._tasks.pop(job.id, None)
             assert self._executor is not None and self._live_vars is not None
             variables = {**job.vars, **await self._live_vars(), "job": {"id": job.id}}
             await self._executor.run(job.steps, variables)
-            await self._store.log_event(delivery_id=None, gesture=None, detail=f"job {job.id}",
-                                        status="ok")
+            await self._store.log_event(delivery_id=None, gesture=None, detail=f"job {job.id}", status="ok")
         except asyncio.CancelledError:
             raise
         except Exception as e:  # a failing job must never take the scheduler down
             log.exception("scheduled job %s failed", job.id)
             await self._store.log_event(delivery_id=None, gesture=None, detail=f"job {job.id}",
                                         status="error", error=str(e))
+        # Only now drop the row: a restart mid-run re-runs the job (its steps are idempotent).
+        # Match run_at so a job that rescheduled itself (the digest) keeps its new row.
+        await self._store.delete_job(job.id, job.run_at)
+        if self._tasks.get(job.id) is asyncio.current_task():
+            self._tasks.pop(job.id, None)
 
     async def aclose(self) -> None:
         for task in self._tasks.values():
@@ -223,6 +225,7 @@ class Runtime:
         }
 
     async def aclose(self) -> None:
+        await self.context.aclose()
         await self.scheduler.aclose()
         await self.devices.aclose()
         if self.tesla is not None:

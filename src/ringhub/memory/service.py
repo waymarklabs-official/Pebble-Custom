@@ -21,7 +21,9 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-ATTENTION_KEY = "attention"
+ATTENTION_REMINDER = "attention.reminder"
+ATTENTION_CAPTURE = "attention.capture"
+CAPTURE_UNDO_SECONDS = 30
 NAG_AFTER = timedelta(minutes=15)
 SNOOZE = timedelta(minutes=10)
 
@@ -34,20 +36,26 @@ class CaptureResult:
     reminder: Reminder | None = None
 
 
-# Built-in questions. Checked after user skill phrases, before reminders and notes.
-_Q_PARKED = re.compile(r"\bwhere(?:'s| is| did i| have i)? ?(?:i )?(?:park|parked|leave|left)\b|"
-                       r"\bwhere(?:'s| is) (?:the |my )?car\b")
-_Q_LIST = re.compile(r"\bwhat(?:'s| is) on my (?:list|plate)\b|\bwhat are my reminders\b|"
-                     r"\bwhat do i (?:have|need) to do\b|^(?:my )?(?:list|reminders|to ?do(?: list)?)$")
-_Q_NEXT = re.compile(r"\bwhat(?:'s| is) next\b|\bnext reminder\b")
-_Q_DID = re.compile(r"^(?:did|have) i (?:already )?(?P<what>.+?)(?: today)?$")
-_Q_ABOUT = re.compile(r"\b(?:what did i (?:say|note|write|record) (?:about|on|regarding)|"
+# Built-in questions, matched against the WHOLE utterance (after filler) so statements that merely
+# contain "where I parked" are saved as notes, not answered. Checked after user skill phrases.
+_FILLER = re.compile(r"^(?:(?:um|uh|hey|ok|okay|so|ring|please)\s+)+|(?:\s+(?:please|again|now))+$")
+_Q_PARKED = re.compile(r"^(?:where (?:did|have) i (?:park|parked)(?: the car| my car)?(?: today)?|"
+                       r"where(?: is|'s) (?:the |my )?car|where (?:did|have) i (?:leave|left) (?:the |my )?car)$")
+_Q_WHERE = re.compile(r"^where (?:did|have) i (?:leave|left|put) (?:the |my )?(?P<q>.+)$|"
+                      r"^where(?: are| is|'s|'re) (?:the |my )?(?P<q2>.+)$")
+_Q_LIST = re.compile(r"^(?:what(?:'s| is) on my (?:list|plate)(?: today)?|what are my reminders|"
+                     r"what do i (?:have|need) to do(?: today)?|(?:my )?(?:list|reminders|to ?do(?: list)?))$")
+_Q_NEXT = re.compile(r"^(?:what(?:'s| is) next|(?:what(?:'s| is) )?(?:my )?next reminder)$")
+_Q_DID = re.compile(r"^(?:did|have) i (?:already )?(?P<what>.+?)(?: today| yet| already)?$")
+_Q_ABOUT = re.compile(r"^(?:what did i (?:say|note|write|record) (?:about|on|regarding)|"
                       r"find (?:my )?(?:notes? )?(?:about|on|for)|search (?:my notes )?for|"
                       r"what was (?:the|that) (?:thing|idea|note) (?:about|for))\s+(?P<q>.+)$")
-_Q_AT = re.compile(r"\bwhat did i (?:say|note|save|write|capture|record|jot down)(?: while i was)? (?:at|in) "
+_Q_AT = re.compile(r"^what did i (?:say|note|save|write|capture|record|jot down)(?: while i was)? (?:at|in) "
                    r"(?:the |my )?(?P<place>[\w' ]+?)(?: today| yesterday| recently)?$")
-_Q_LAST = re.compile(r"\b(?:what (?:was|were) my last|read (?:me )?my (?:last|latest|recent))\b"
-                     r"(?: (?P<n>\d+))? ?(?:notes?|thoughts?|captures?)?")
+_Q_LAST = re.compile(r"^(?:what (?:was|were) my last|read (?:me )?my (?:last|latest|recent))"
+                     r"(?: (?P<n>\d+))?(?: (?:notes?|thoughts?|captures?))?$")
+LATE_REFERENCE_LIMIT = 7 * 86400
+"""Voice can arrive late (ring offline); trust its recorded time up to a week back."""
 
 
 def _clip(text: str, n: int = 80) -> str:
@@ -86,20 +94,41 @@ class Memory:
         return place.name if place else place_id.replace("_", " ")
 
     async def set_attention(self, kind: str, ref: Any) -> None:
-        await self.rt.store.set(ATTENTION_KEY, {"kind": kind, "ref": ref, "at": time.time()})
+        """Remember what the ring is "about" right now: a just-fired reminder, or a just-saved capture.
+
+        Separate slots, so saving a note never steals click=Done from a reminder that just fired.
+        """
+        key = ATTENTION_REMINDER if kind == "reminder" else ATTENTION_CAPTURE
+        await self.rt.store.set(key, {"kind": kind, "ref": ref, "at": time.time()})
+
+    async def attention_slots(self) -> dict[str, dict[str, Any]]:
+        window = self.rt.config.memory.ack_window_seconds
+        if window <= 0:
+            return {}
+        out: dict[str, dict[str, Any]] = {}
+        now = time.time()
+        for kind, key, limit in (("reminder", ATTENTION_REMINDER, window),
+                                 ("capture", ATTENTION_CAPTURE, min(window, CAPTURE_UNDO_SECONDS))):
+            att = await self.rt.store.get(key)
+            if isinstance(att, dict) and now - float(att.get("at", 0)) <= limit:
+                out[kind] = att
+        return out
 
     async def attention(self) -> dict[str, Any] | None:
-        att = await self.rt.store.get(ATTENTION_KEY)
-        window = self.rt.config.memory.ack_window_seconds
-        if not isinstance(att, dict) or window <= 0:
-            return None
-        limit = window if att.get("kind") == "reminder" else min(window, 30)
-        if time.time() - float(att.get("at", 0)) > limit:
-            return None
-        return att
+        """The most recent active attention item (for display)."""
+        slots = await self.attention_slots()
+        return max(slots.values(), key=lambda a: float(a.get("at", 0))) if slots else None
 
-    async def clear_attention(self) -> None:
-        await self.rt.store.delete(ATTENTION_KEY)
+    async def clear_attention(self, kind: str | None = None, ref: Any = None) -> None:
+        """Clear one slot (only if it still refers to ``ref``, when given) or both."""
+        for k, key in (("reminder", ATTENTION_REMINDER), ("capture", ATTENTION_CAPTURE)):
+            if kind not in (None, k):
+                continue
+            if ref is not None:
+                att = await self.rt.store.get(key)
+                if not isinstance(att, dict) or att.get("ref") != ref:
+                    continue
+            await self.rt.store.delete(key)
 
     # ------------------------------------------------------------------ capture
 
@@ -115,17 +144,22 @@ class Memory:
             return CaptureResult("note", "🎙️ Voice memo saved (no transcript)", note=note)
         if not text:
             return CaptureResult("empty", "🤔 I didn't catch anything — nothing saved.")
-        answer = await self.answer(text)
-        if answer is not None:
-            return CaptureResult("answer", answer)
-
-        now = datetime.fromtimestamp(max(said_at, time.time() - 3600), self.rt.config.tz)
-        parsed = parse_reminder(text, now, await self.place_aliases())
-        if parsed is None and self.rt.llm is not None:
-            parsed = await self.rt.llm.extract_reminder(text, now, await self.place_aliases())
-        if parsed is not None:
-            return await self._create_reminder(parsed, text, said_at=said_at, place=place, mode=mode,
-                                               audio=audio, source=source)
+        try:
+            answer = await self.answer(text)
+            if answer is not None:
+                return CaptureResult("answer", answer)
+            # Resolve "at 7" / "tomorrow" against when it was SAID: the ring may deliver late.
+            current = time.time()
+            ref = said_at if current - LATE_REFERENCE_LIMIT <= said_at <= current + 300 else current
+            now = datetime.fromtimestamp(ref, self.rt.config.tz)
+            parsed = parse_reminder(text, now, await self.place_aliases())
+            if parsed is None and self.rt.llm is not None:
+                parsed = await self.rt.llm.extract_reminder(text, now, await self.place_aliases())
+            if parsed is not None:
+                return await self._create_reminder(parsed, text, said_at=said_at, place=place, mode=mode,
+                                                   audio=audio, source=source)
+        except Exception:  # parsing must never cost the user their words
+            log.exception("capture interpretation failed; saving as a plain note")
 
         note = await self.rt.notes.add(text, kind="note", created_at=said_at, place=place, mode=mode,
                                        audio=audio, source=source)
@@ -145,7 +179,10 @@ class Memory:
                                                note_id=note.id, created_at=said_at)
         if trig.kind == "time":
             await self.schedule(reminder)
-            message = f"⏰ {self._when(due or time.time())} · {_clip(parsed.text)}"
+            if due is not None and due < time.time():
+                message = f"⏰ Overdue (said {self._when(said_at)}) · {_clip(parsed.text)}"
+            else:
+                message = f"⏰ {self._when(due or time.time())} · {_clip(parsed.text)}"
         elif trig.kind in ("arrive", "leave"):
             label = await self.place_label(trig.place)
             verb = "arrive at" if trig.kind == "arrive" else "leave"
@@ -167,7 +204,7 @@ class Memory:
             note = await self.rt.notes.get(int(ref["note"]))
             if note and await self.rt.notes.delete(note.id):
                 parts.append("note")
-        await self.clear_attention()
+        await self.clear_attention("capture")
         return f"↩️ Undone ({' + '.join(parts) or 'nothing to undo'})"
 
     async def journal(self, transcript: str, *, said_at: float, place: str | None, mode: str | None,
@@ -198,22 +235,25 @@ class Memory:
     # ------------------------------------------------------------------ recall
 
     async def answer(self, text: str) -> str | None:
-        q = normalize(text)
-        if _Q_PARKED.search(q):
+        q = _FILLER.sub("", normalize(text)).strip()
+        if _Q_PARKED.match(q):
             return await self.where_parked()
-        if _Q_LIST.search(q):
+        if _Q_LIST.match(q):
             return await self.list_summary()
-        if _Q_NEXT.search(q):
+        if _Q_NEXT.match(q):
             return await self.next_summary()
-        m = _Q_ABOUT.search(q)
+        m = _Q_ABOUT.match(q)
         if m:
             return await self.search_summary(m.group("q"))
-        m = _Q_AT.search(q)
+        m = _Q_AT.match(q)
         if m:
             return await self.place_summary(m.group("place"))
-        m = _Q_LAST.search(q)
-        if m and ("note" in q or "thought" in q or "capture" in q or "last" in q):
+        m = _Q_LAST.match(q)
+        if m:
             return await self.recent_summary(int(m.group("n") or 3))
+        m = _Q_WHERE.match(q)
+        if m:
+            return await self.search_summary(m.group("q") or m.group("q2"))
         m = _Q_DID.match(q)
         if m:
             return await self.did_i(m.group("what"))
@@ -278,12 +318,18 @@ class Memory:
         return "📝 " + "\n".join(f"• {_clip(n.text, 70)} — {self._when(n.created_at)}" for n in notes)
 
     async def did_i(self, what: str) -> str:
+        """Yes only when every meaningful word matches something logged today."""
         start = self.rt.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
-        hits = [n for n in await self.rt.notes.search(what, 10) if n.created_at >= start and n.kind != "reminder"]
-        if not hits:
-            return f"🤷 No record of “{_clip(what, 40)}” today."
-        n = hits[0]
-        return f"✅ Yes — “{_clip(n.text, 50)}” at {self._when(n.created_at)}"
+        kw = {"since": start, "exclude_kinds": ["reminder"]}
+        hits = await self.rt.notes.search(what, 1, all_terms=True, **kw)  # type: ignore[arg-type]
+        if hits:
+            n = hits[0]
+            return f"✅ Yes — “{_clip(n.text, 50)}” at {self._when(n.created_at)}"
+        close = await self.rt.notes.search(what, 1, **kw)  # type: ignore[arg-type]
+        if close:
+            n = close[0]
+            return f"🤔 Not sure. Closest today: “{_clip(n.text, 50)}” at {self._when(n.created_at)}"
+        return f"🤷 No record of “{_clip(what, 40)}” today."
 
     # ------------------------------------------------------------------ reminders
 
@@ -297,10 +343,22 @@ class Memory:
         r = await self.rt.reminders.mark_fired(rid)
         if r is None:
             return None  # already fired/done/cancelled: idempotent
-        await self._push_reminder(r, nag=False)
-        await self.set_attention("reminder", r.id)
+        # Schedule the follow-up before pushing: if the push hangs or the hub restarts now, the
+        # nag still delivers it.
         await self.rt.scheduler.schedule([{"reminder.nag": {"id": r.id}}], NAG_AFTER, {}, f"nag:{r.id}")
+        await self.set_attention("reminder", r.id)
+        await self._push_reminder(r, nag=False)
         return r
+
+    async def reconcile(self) -> int:
+        """On boot: re-arm any pending timed reminder that lost its job. Returns how many."""
+        jobs = {j.id for j in await self.rt.scheduler.pending()}
+        missing = [r for r in await self.rt.reminders.pending_timed() if f"reminder:{r.id}" not in jobs]
+        for r in missing:
+            await self.schedule(r)
+        if missing:
+            log.warning("re-armed %d reminder(s) that had no scheduled job", len(missing))
+        return len(missing)
 
     async def nag(self, rid: str) -> None:
         r = await self.rt.reminders.get(rid)
@@ -330,9 +388,7 @@ class Memory:
         await self._drop_jobs(rid)
         if r is not None:
             await self.rt.notifier.clear(f"rem-{rid}", self.rt.notifier.topic_for("reminder"))
-        att = await self.rt.store.get(ATTENTION_KEY)
-        if isinstance(att, dict) and att.get("ref") == rid:
-            await self.clear_attention()
+        await self.clear_attention("reminder", rid)
         return r
 
     async def snooze(self, rid: str, by: timedelta = SNOOZE) -> Reminder | None:
@@ -340,7 +396,7 @@ class Memory:
         if r is not None:
             await self.rt.scheduler.cancel(f"nag:{rid}")
             await self.schedule(r)
-            await self.clear_attention()
+            await self.clear_attention("reminder", rid)
         return r
 
     async def cancel(self, rid: str) -> Reminder | None:
@@ -388,7 +444,9 @@ class Memory:
         target = now.replace(hour=at.hour, minute=at.minute, second=0, microsecond=0)
         if target <= now:
             target += timedelta(days=1)
-        await self.rt.scheduler.schedule([{"memory.digest": {}}], target - now, {}, "digest")
+        # Elapsed seconds, not aware wall-clock subtraction (which is off by an hour across DST).
+        delay = timedelta(seconds=max(0.0, target.timestamp() - time.time()))
+        await self.rt.scheduler.schedule([{"memory.digest": {}}], delay, {}, "digest")
 
     async def digest(self) -> None:
         start = self.rt.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()

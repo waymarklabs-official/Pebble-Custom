@@ -111,19 +111,48 @@ def _next_clock(now: datetime, hour: int, minute: int, meridiem: str | None) -> 
 def _day_base(now: datetime, day: str) -> tuple[datetime, time | None]:
     """Start-of-day for a day phrase plus that phrase's default time, if any."""
     today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    words = day.split()
     if day == "today":
         return today, None
     if day == "tonight":
         return today, _PARTS_OF_DAY["night"]
-    if day.startswith("this "):
-        return today, _PARTS_OF_DAY[day.split()[1]]
+    if words[0] == "this" and words[-1] in _PARTS_OF_DAY:
+        return today, _PARTS_OF_DAY[words[-1]]
     if day == "tomorrow":
         return today + timedelta(days=1), time(9)
-    name = day.split()[-1]
-    delta = (_WEEKDAYS.index(name) - now.weekday()) % 7
-    if delta == 0 or day.startswith("next "):
-        delta = delta or 7
+    delta = (_WEEKDAYS.index(words[-1]) - now.weekday()) % 7
+    if delta == 0 and words[0] != "this":
+        delta = 7  # "on friday" said on a Friday means next week; "this friday" means today
     return today + timedelta(days=delta), time(9)
+
+
+def _same_day(day: str) -> bool:
+    return day in ("today", "tonight") or (day.startswith("this ") and day.split()[-1] in _PARTS_OF_DAY)
+
+
+def _hour_on(base: datetime, now: datetime, hour: int, minute: int, meridiem: str | None,
+             part: str | None, day: str) -> int:
+    """24h hour for a clock time said together with a day word."""
+    if meridiem in ("am", "a m"):
+        return 0 if hour == 12 else hour
+    if meridiem in ("pm", "p m"):
+        return hour if hour == 12 else hour + 12
+    if hour == 0 or hour >= 13:
+        return hour
+    if part in ("afternoon", "evening", "night") or day == "tonight":
+        return hour if hour == 12 else hour + 12
+    if base.date() == now.date():
+        # "today at 7" at 14:10 means 19:00: the next occurrence of the clock face today.
+        for h in (hour % 12, hour % 12 + 12):
+            if base.replace(hour=h, minute=minute) > now:
+                return h
+        return hour % 12 + 12
+    return hour + 12 if hour <= 6 else hour  # "friday at 3" is 3 pm; "friday at 8" is 8 am
+
+
+def _after(now: datetime, seconds: float) -> datetime:
+    """``now`` plus elapsed seconds (DST-safe, unlike aware wall-clock arithmetic)."""
+    return datetime.fromtimestamp(now.timestamp() + seconds, now.tzinfo)
 
 
 def _parse_time(text: str, now: datetime) -> tuple[datetime | None, list[tuple[int, int]]]:
@@ -131,7 +160,10 @@ def _parse_time(text: str, now: datetime) -> tuple[datetime | None, list[tuple[i
     m = _IN_RE.search(text)
     if m:
         spans.append(m.span())
-        return now + timedelta(seconds=float(m.group(1)) * _UNIT_SECONDS[m.group(2)]), spans
+        amount, unit = float(m.group(1)), m.group(2)
+        if unit in ("day", "week"):  # calendar units keep the wall-clock time of day
+            return now + timedelta(days=amount * (7 if unit == "week" else 1)), spans
+        return _after(now, amount * _UNIT_SECONDS[unit]), spans
 
     day_m = _DAY_RE.search(text)
     clock_m = _CLOCK_RE.search(text)
@@ -139,7 +171,7 @@ def _parse_time(text: str, now: datetime) -> tuple[datetime | None, list[tuple[i
         later = _LATER_RE.search(text)
         if later:
             spans.append(later.span())
-            return now + timedelta(hours=3), spans
+            return _after(now, 3 * 3600), spans
         return None, spans
 
     hour_min: tuple[int, int, str | None] | None = None
@@ -149,34 +181,28 @@ def _parse_time(text: str, now: datetime) -> tuple[datetime | None, list[tuple[i
         if word in ("noon", "midday"):
             hour_min = (12, 0, "pm")
         elif word == "midnight":
-            hour_min = (0, 0, "am")
+            hour_min = (12, 0, "am")
         elif h is not None and int(h) <= 23 and int(mi or 0) <= 59:
             hour_min = (int(h), int(mi or 0), None if mer and "clock" in mer else mer)
 
     if day_m:
         spans.append(day_m.span())
-        base, default = _day_base(now, day_m.group(1))
+        day = day_m.group(1).removeprefix("on ")
+        base, default = _day_base(now, day)
         part = day_m.group(2)
         if part:
             default = _PARTS_OF_DAY[part]
         if hour_min is not None:
             h, mi, mer = hour_min
-            if mer in ("pm", "p m") and h < 12:
-                h += 12
-            elif mer is None and part in ("afternoon", "evening", "night") and h < 12:
-                h += 12
-            elif mer is None and day_m.group(1) == "tonight" and h < 12:
-                h += 12
-            at = base.replace(hour=h % 24, minute=mi)
+            at = base.replace(hour=_hour_on(base, now, h, mi, mer, part, day), minute=mi)
         else:
             at = base.replace(hour=(default or time(9)).hour, minute=(default or time(9)).minute)
         if at <= now:
-            if day_m.group(1) in ("today", "tonight") or day_m.group(1).startswith("this "):
-                return None, spans  # already passed today; caller falls back to keeping the note
+            if _same_day(day) or day in ("today", "tomorrow"):
+                return None, spans  # already passed; the caller keeps it as a list item
             at += timedelta(days=7)
         return at, spans
 
-    assert hour_min is not None or clock_m is not None
     if hour_min is None:
         return None, spans
     return _next_clock(now, *hour_min), spans
@@ -187,7 +213,27 @@ def _strip(text: str, spans: list[tuple[int, int]]) -> str:
         text = text[:start] + " " + text[end:]
     text = re.sub(r"\s+", " ", text).strip(" ,.")
     text = re.sub(r"^(?:(?:and|to|that|about|please|then|ok|okay|hey)\b ?)+", "", text)
-    text = re.sub(r"(?:\b(?:to|and|please|then)\b ?)+$", "", text).strip(" ,.")
+    return re.sub(r"(?:\b(?:to|and|please|then)\b ?)+$", "", text).strip(" ,.")
+
+
+def _recase(body: str, original: str) -> str:
+    """Restore the speaker's casing ("Bob", "NASA") lost by normalization, then capitalize.
+
+    Walks the original words in order and reuses each one whose normalized form equals the next
+    body word; words that normalization rewrote (spoken numbers) keep their normalized form.
+    """
+    orig = re.findall(r"[\w'\u2019]+", original)
+    out: list[str] = []
+    j = 0
+    for word in body.split(" "):
+        for k in range(j, len(orig)):
+            if normalize(orig[k]) == word:
+                out.append(orig[k].replace("\u2019", "'"))
+                j = k + 1
+                break
+        else:
+            out.append(word)
+    text = " ".join(out)
     return text[:1].upper() + text[1:] if text else text
 
 
@@ -212,7 +258,7 @@ def parse_reminder(transcript: str, now: datetime, places: Mapping[str, str] | N
             body = _strip(text, spans)
             if body:
                 trig = Trigger(kind=kind, place=place, place_known=known)  # type: ignore[arg-type]
-                return ParsedReminder(text=body, trigger=trig)
+                return ParsedReminder(text=_recase(body, transcript), trigger=trig)
 
     if not cue:
         return None  # "meeting at 3" is a note, not a reminder, unless the user asked
@@ -220,6 +266,7 @@ def parse_reminder(transcript: str, now: datetime, places: Mapping[str, str] | N
     body = _strip(text, spans + time_spans)
     if not body:
         return None
+    body = _recase(body, transcript)
     if at is None:
         return ParsedReminder(text=body, trigger=Trigger(kind="none"))
     return ParsedReminder(text=body, trigger=Trigger(kind="time", at=at))
