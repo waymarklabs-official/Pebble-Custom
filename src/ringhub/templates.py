@@ -25,46 +25,53 @@ class NoParams(_P):
 
 
 class MomentP(_P):
-    label: str | None = Field(None, max_length=80, description="Optional label, e.g. 'Great idea'")
+    label: str | None = Field(None, max_length=80, title="Label (optional)",
+                              description="Saved instead of “Moment at <place>”, e.g. “Great idea”")
 
 
 class NoteP(_P):
-    text: str = Field(min_length=1, max_length=120, description="What to log, e.g. 'Took meds ✓'")
+    text: str = Field(min_length=1, max_length=120, title="What to log",
+                      description="e.g. “Took meds ✓”. Ask “did I take my meds?” later to check.")
 
 
 class RecallP(_P):
-    count: int = Field(3, ge=1, le=10)
+    count: int = Field(3, ge=1, le=10, title="How many notes")
 
 
 class NotifyP(_P):
-    message: str = Field(min_length=1, max_length=500)
-    title: str | None = Field(None, max_length=80)
-    topic: str | None = Field(None, pattern=r"^[A-Za-z0-9_-]{1,64}$",
-                              description="ntfy topic (blank = your own topic)")
-    priority: int = Field(3, ge=1, le=5)
-    tags: list[str] = Field(default_factory=list)
+    message: str = Field(min_length=1, max_length=500, title="Message")
+    title: str | None = Field(None, max_length=80, title="Title (optional)")
+    topic: str | None = Field(None, pattern=r"^[A-Za-z0-9_-]{1,64}$", title="ntfy topic",
+                              description="Who receives it. Leave blank to send to your own topic.")
+    priority: int = Field(3, ge=1, le=5, title="Priority",
+                          description="1-2 silent · 3 normal · 4-5 time-sensitive (breaks through Focus)")
+    tags: list[str] = Field(default_factory=list, title="Tags", description="ntfy emoji tags, e.g. raised_hand")
 
 
 class WebhookP(_P):
-    url: str = Field(pattern=r"^https?://")
-    method: Literal["GET", "POST", "PUT", "PATCH", "DELETE"] = "POST"
-    headers: dict[str, str] = Field(default_factory=dict)
-    body: dict[str, Any] | None = None
+    url: str = Field(pattern=r"^https?://", title="URL")
+    method: Literal["GET", "POST", "PUT", "PATCH", "DELETE"] = Field("POST", title="Method")
+    headers: dict[str, str] = Field(default_factory=dict, title="Headers")
+    body: dict[str, Any] | None = Field(None, title="JSON body (optional)")
 
 
 class CarSmartP(_P):
-    unlocked: Literal["trunk", "frunk", "nothing"] = "trunk"
-    locked: Literal["precondition", "nothing"] = "precondition"
+    unlocked: Literal["trunk", "frunk", "nothing"] = Field(
+        "trunk", title="When unlocked (you're at the car)", description="Phone Key unlocks the car as you walk up.")
+    locked: Literal["precondition", "nothing"] = Field(
+        "precondition", title="When locked or asleep (you're away)",
+        description="Starts climate; wakes the car if needed.")
 
 
 class CarCommandP(_P):
-    command: str = Field(pattern=r"^[a-z_]{3,64}$")
-    params: dict[str, Any] = Field(default_factory=dict)
+    command: str = Field(pattern=r"^[a-z_]{3,64}$", title="Fleet API command",
+                         description="e.g. door_lock, flash_lights, honk_horn, charge_port_door_open")
+    params: dict[str, Any] = Field(default_factory=dict, title="Parameters (JSON)")
 
 
 class TvP(_P):
-    command: TvCommand
-    target: str = "here"
+    command: TvCommand = Field(title="Button")
+    target: str = Field("here", title="Which TV", description="A device or room name, “all”, or “here”")
 
 
 class CustomP(_P):
