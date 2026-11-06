@@ -39,6 +39,13 @@ def _cmd_check(args: argparse.Namespace) -> int:
         if not cfg.tesla.domain:
             car += " · TESLA_DOMAIN missing (needed for the car to trust this hub)"
     print(f"    car: {car}")
+    if cfg.tesla is not None:
+        from .oauth import redirect_uri_for, tesla_url_problems
+
+        ru = redirect_uri_for("tesla", cfg.tesla, srv.public_url)
+        print(f"    tesla sign-in returns to: {ru or 'nowhere (set TESLA_DOMAIN)'}")
+        for problem in tesla_url_problems(ru, srv.public_url):
+            print(f"      ! {problem}")
     gcal = "on (connect in Setup → Integrations)" if cfg.google else "off (set GOOGLE_CLIENT_ID in .env)"
     print(f"    google calendar: {gcal}")
     print(f"    voice fallback LLM: {'on' if cfg.llm else 'off'}")

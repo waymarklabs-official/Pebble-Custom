@@ -35,8 +35,8 @@ calendar you want:
      verified this app" screen when connecting; choose **Advanced → Go to ringhub**.
 4. **Credentials → Create credentials → OAuth client ID → Web application.**
    - **Authorized redirect URI:** copy it from the dashboard (Setup → Integrations → Google
-     Calendar). It's your `RINGHUB_PUBLIC_URL` + `/oauth/google/callback`, for example
-     `https://tesla-stream.tail51b89d.ts.net:8445/oauth/google/callback`. Only the browser on your
+     Calendar). It's your `RINGHUB_PUBLIC_URL` + `/oauth/callback`, for example
+     `https://tesla-stream.tail51b89d.ts.net:8445/oauth/callback`. Only the browser on your
      phone needs to reach it, so a tailnet address works.
    - Copy the **Client ID** and **Client secret**.
 
@@ -112,30 +112,41 @@ bash deploy/pi/tesla-keys.sh
 This makes `data/tesla/private-key.pem` (your signing key: back it up with `data/`, never share
 it), `public-key.pem`, and the proxy's TLS certificate. Running it again never replaces a key.
 
-### 2. Host the public key on a domain you control
+### 2. Put two files on a public site you control (not the Pi)
 
-Tesla fetches it from `https://<domain>/.well-known/appspecific/com.tesla.3p.public-key.pem`, and
-the car shows `<domain>` on its Locks screen. The domain must be reachable from the internet.
-Don't use the Pi for this: GitHub Pages is free and keeps the Pi off the internet.
+Tesla checks the app's domain and sign-in address against these rules, as its form states them:
+- they must not contain "tesla";
+- they need a certificate from a public CA;
+- they must not sit behind a reverse proxy.
+
+Your Pi fails all three: its name is `tesla-stream…`, and Tailscale Serve is a reverse proxy. So
+the Tesla side lives on a small static site of yours. GitHub Pages is free, and many Fleet API
+users host their key there. The Pi stays exactly as it is, with nothing exposed and no
+networking changes.
 
 1. On GitHub, create a public repository named **`<your-username>.github.io`** (for this account:
    `waymarklabs-official.github.io`). Your domain is then `waymarklabs-official.github.io`.
-2. Add two files:
+2. Add three files:
    - `.well-known/appspecific/com.tesla.3p.public-key.pem`: the contents of
-     `data/tesla/public-key.pem`.
+     `data/tesla/public-key.pem`. Tesla reads your key here.
+   - `callback.html`: the page from the dashboard (Setup → Integrations → Tesla → **Download
+     callback.html**). After you sign in, Tesla sends your browser here, and the page passes it
+     straight on to ringhub over Tailscale. It's static, contains no secrets, and only ever
+     forwards to your own ringhub address.
    - `.nojekyll`: empty. Without it, GitHub Pages hides folders that start with a dot.
 3. **Settings → Pages →** deploy from the main branch. Then check in a browser that
    `https://waymarklabs-official.github.io/.well-known/appspecific/com.tesla.3p.public-key.pem`
    shows the key.
 
-A domain you own works the same way: host that one file.
+A domain you own works the same way: host the same three files.
 
 ### 3. Create the app at developer.tesla.com
 
 Sign in with your Tesla account, then **Dashboard → Create application**:
 - **Allowed origin:** `https://<domain>` (e.g. `https://waymarklabs-official.github.io`).
-- **Allowed redirect URI:** copy it from the dashboard (Setup → Integrations → Tesla). It's your
-  `RINGHUB_PUBLIC_URL` + `/oauth/tesla/callback`.
+- **Allowed redirect URI:** `https://<domain>/callback.html` (e.g.
+  `https://waymarklabs-official.github.io/callback.html`). The dashboard shows it too. It must
+  match character for character.
 - **Scopes:** Vehicle Information, Vehicle Location, Vehicle Commands, Vehicle Charging
   Management.
 - Copy the **Client ID** and **Client Secret**. Set up billing if Tesla asks.
@@ -156,8 +167,11 @@ From now on, keep `--profile tesla` on `docker compose pull` and `up -d`, or put
 
 ### 5. Connect, register, pair (dashboard → Setup → Integrations → Tesla)
 
-1. **Connect Tesla:** sign in at Tesla and allow access. With one car on the account, it's picked
-   automatically; otherwise tap **Show my cars** and choose.
+1. **Connect Tesla:** sign in at Tesla and allow access. Tesla sends you to your `callback.html`,
+   which takes you back to the dashboard. With one car on the account, it's picked automatically;
+   otherwise tap **Show my cars** and choose. If you end up stuck on the callback page (Tailscale
+   was off on the phone), copy that page's full address and paste it under **Finish connecting by
+   pasting the address**.
 2. **Register** (once): tells Tesla your domain and key, and checks that the key Tesla downloaded
    matches this hub's.
 3. **Pair the key** (once): on your phone, with the Tesla app signed in and the car nearby, open
@@ -171,6 +185,9 @@ From now on, keep `--profile tesla` on `docker compose pull` and `up -d`, or put
 |---|---|
 | "the car doesn't know this hub's key yet" | Do step 5.3 (pairing). The car must be online and near your phone. |
 | "the command proxy isn't running" | `docker compose --profile tesla up -d`, then `docker compose logs tesla-proxy`. |
+| Tesla's form rejects the origin or redirect URI | Use your GitHub Pages (or own) domain, never the Pi's address. Neither may contain "tesla". `ringhub check` and the dashboard flag addresses Tesla would refuse. |
+| "redirect_uri mismatch" after signing in | The redirect URI at developer.tesla.com must be exactly what the dashboard shows (`https://<domain>/callback.html`). Use `TESLA_REDIRECT_URI` only if you host the page elsewhere. |
+| Stuck on the callback page | Turn Tailscale on and reload it, or paste its address into the dashboard (Finish connecting). |
 | Register fails with a domain error | The allowed origin at developer.tesla.com must be `https://<TESLA_DOMAIN>`, and the key URL must load in a browser. |
 | "registered, but with a different public key" | The hosted file isn't `data/tesla/public-key.pem`. Replace it, then Register again. |
 | "access was revoked or expired" | Connect Tesla again (refresh tokens are single-use, and changing your Tesla password revokes them). |

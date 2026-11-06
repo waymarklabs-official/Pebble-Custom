@@ -229,6 +229,10 @@ class TeslaConfig(_Strict):
     """Picked in the dashboard when you connect; set it only to override."""
     refresh_token: SecretStr | None = None
     """Bootstrap only (the dashboard's Connect does this for you)."""
+    redirect_uri: str | None = Field(None, pattern=r"^https://[^\s]+$")
+    """Where Tesla sends the browser after you sign in. Default: https://<domain>/callback.html,
+    the forwarding page from the dashboard. Tesla rejects addresses with "tesla" in them and
+    reverse-proxied hosts, so this must not be ringhub's Tailscale address."""
     auth_url: str = "https://fleet-auth.prd.vn.cloud.tesla.com/oauth2/v3/token"
     authorize_url: str = "https://auth.tesla.com/oauth2/v3/authorize"
     scopes: str = "openid offline_access vehicle_device_data vehicle_location vehicle_cmds vehicle_charging_cmds"
@@ -238,7 +242,7 @@ class TeslaConfig(_Strict):
     """How the hub speaks temperatures (the car always takes Celsius)."""
 
     @field_validator("client_secret", "domain", "base_url", "ca_cert", "public_key", "read_url", "region", "vin",
-                     "refresh_token", mode="before")
+                     "refresh_token", "redirect_uri", mode="before")
     @classmethod
     def _blank_is_unset(cls, v: Any) -> Any:
         return None if isinstance(v, str) and not v.strip() else v
@@ -260,6 +264,8 @@ class GoogleConfig(_Strict):
     """Which calendar new events go to ("primary" is your main one)."""
     default_minutes: int = Field(60, ge=5, le=1440)
     """Length of an event when you don't say one ("for 30 minutes")."""
+    redirect_uri: str | None = Field(None, pattern=r"^https?://[^\s]+$")
+    """Where Google sends the browser after you sign in. Default: <public_url>/oauth/callback."""
     authorize_url: str = "https://accounts.google.com/o/oauth2/v2/auth"
     token_url: str = "https://oauth2.googleapis.com/token"  # noqa: S105 - a URL
     api_url: str = "https://www.googleapis.com/calendar/v3"
@@ -275,6 +281,11 @@ class GoogleConfig(_Strict):
     @classmethod
     def _primary_by_default(cls, v: Any) -> Any:
         return "primary" if isinstance(v, str) and not v.strip() else v
+
+    @field_validator("redirect_uri", mode="before")
+    @classmethod
+    def _blank_redirect(cls, v: Any) -> Any:
+        return None if isinstance(v, str) and not v.strip() else v
 
 
 def _off_when_unset(v: Any) -> Any:

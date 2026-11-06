@@ -34,8 +34,17 @@ from .engine import Engine, label
 from .executor import StepError, validate_skill_steps
 from .models import RingEvent
 from .modes import binding
-from .oauth import new_state, redirect_uri
+from .oauth import (
+    bridge_page,
+    callback_url,
+    code_and_state,
+    new_state,
+    redirect_uri_for,
+    take_state,
+    tesla_url_problems,
+)
 from .runtime import Runtime
+from .seed import car_skills, ensure_skills
 from .store import Store
 from .templates import TemplateError, compile_skill, describe
 
@@ -190,6 +199,10 @@ async def handle_owntracks(svc: Services, msg: dict[str, Any]) -> list[dict[str,
 # ----------------------------------------------------------------------------- bodies
 
 
+class FinishBody(BaseModel):
+    url: str = Field(min_length=1, max_length=4096)
+
+
 class VehicleBody(BaseModel):
     vin: str | None = Field(None, pattern=r"^[A-HJ-NPR-Z0-9]{17}$")
 
@@ -240,6 +253,26 @@ def _place_slug(raw: str) -> str:
     if not re.search(r"[a-z0-9]", raw.lower()):
         raise HTTPException(400, "bad place: use letters or digits (e.g. home, gym)")
     return slugify(raw)
+
+
+async def finish_connect(svc: Services, provider: str, code: str) -> None:
+    """Exchange an authorization code (from the callback or a pasted address) and finish setup."""
+    rt = svc.runtime
+    client: Any = rt.tesla if provider == "tesla" else rt.gcal if provider == "google" else None
+    if client is None:
+        raise ActionError(f"{provider} is off: set its client id in .env and restart")
+    ru = redirect_uri_for(provider, client.config, rt.links.public_url)
+    if ru is None:
+        raise ActionError("set server.public_url (RINGHUB_PUBLIC_URL) first")
+    await client.exchange_code(code, ru)
+    if provider == "tesla" and rt.tesla is not None:
+        try:
+            await rt.tesla.select_vehicle()       # the only car on the account, if there's just one
+        except ActionError:
+            pass                                   # several (or none): pick in the dashboard
+        await ensure_skills(rt.catalog, car_skills())
+        if rt.vehicle is not None:
+            rt.vehicle.invalidate()
 
 
 def build_router(config: Config) -> APIRouter:
@@ -636,25 +669,50 @@ def build_router(config: Config) -> APIRouter:
                 "public_key": key, "public_key_error": key_error,
                 "public_key_url": f"https://{cfg.domain}/.well-known/appspecific/com.tesla.3p.public-key.pem"
                 if cfg.domain else None,
-                "redirect_uri": redirect_uri(public, "tesla"),
+                "redirect_uri": (ru := redirect_uri_for("tesla", cfg, public)),
+                "redirect_problems": tesla_url_problems(ru, public),
+                "domain_problems": ["Tesla rejects domains that contain “tesla”."]
+                if cfg.domain and "tesla" in cfg.domain.lower() else [],
+                # The forwarding page to host at the redirect URI, when that isn't ringhub itself.
+                "bridge_html": bridge_page(callback_url(public) or "") if ru and public and
+                ru != callback_url(public) else None,
             }
         if rt.gcal is None:
             out["google"] = {"enabled": False}
         else:
             out["google"] = {"enabled": True, "connected": await rt.gcal.connected(),
                              "account": await rt.gcal.account(), "calendar_id": rt.gcal.config.calendar_id,
-                             "redirect_uri": redirect_uri(public, "google")}
+                             "redirect_uri": redirect_uri_for("google", rt.gcal.config, public)}
         return out
 
     @r.post("/integrations/{provider}/connect", dependencies=Admin)
     async def integration_connect(provider: Literal["tesla", "google"], svc: Svc) -> dict[str, Any]:
         client = _client(svc, provider)
-        ru = redirect_uri(svc.runtime.links.public_url, provider)
+        ru = redirect_uri_for(provider, client.config, svc.runtime.links.public_url)
         if ru is None:
             raise HTTPException(409, "set server.public_url (RINGHUB_PUBLIC_URL) first: the sign-in returns there")
         if provider == "tesla" and not client.config.client_secret:
             raise HTTPException(409, "set TESLA_CLIENT_SECRET in .env and restart")
         return {"url": client.authorize_url(await new_state(svc.store, provider), ru), "redirect_uri": ru}
+
+    @r.post("/integrations/finish", dependencies=Admin)
+    async def integration_finish(body: FinishBody, svc: Svc) -> dict[str, Any]:
+        """Finish connecting from the address the browser landed on, pasted into the dashboard
+        (for when the forwarding page couldn't reach ringhub, e.g. Tailscale was off)."""
+        code, state, error, description = code_and_state(body.url)
+        if error:
+            raise HTTPException(400, f"not connected: {description or error}")
+        if not code or not state:
+            raise HTTPException(400, "that address has no code and state in it: copy the whole address after "
+                                     "signing in")
+        provider = await take_state(svc.store, state)
+        if provider is None:
+            raise HTTPException(400, "that sign-in expired or was already used: start again with Connect")
+        try:
+            await finish_connect(svc, provider, code)
+        except ActionError as e:
+            raise HTTPException(502, str(e)) from None
+        return {"provider": provider, "connected": True}
 
     @r.post("/integrations/{provider}/disconnect", dependencies=Admin)
     async def integration_disconnect(provider: Literal["tesla", "google"], svc: Svc) -> dict[str, Any]:
