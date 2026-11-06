@@ -41,8 +41,12 @@ notifications for ntfy so reminders can break through a Focus.
 Your phone POSTs ring events and context to the hub from wherever you are, so the hub needs an
 HTTPS URL that works away from home.
 
-- **Tailscale (recommended, private):** install it on the hub and the phone, then run
-  `tailscale serve --bg 8787`. Put `https://<hub>.<tailnet>.ts.net` in `RINGHUB_PUBLIC_URL`.
+- **Tailscale (recommended, private):** install it on the hub and the phone, then publish the hub
+  on a port of its own: `sudo tailscale serve --bg --https=8445 http://127.0.0.1:8787`, and put
+  `https://<hub>.<tailnet>.ts.net:8445` in `RINGHUB_PUBLIC_URL`. Always name the port: without
+  `--https=…`, `tailscale serve` takes the machine's plain https address, which other apps on the
+  same machine may already use. On a Raspberry Pi, `deploy/pi/serve.sh` does this for you
+  (docs/PI.md).
 - Cloudflare Tunnel or Caddy with your own domain also work. Signing and the tokens protect
   everything, but prefer not exposing the dashboard publicly.
 

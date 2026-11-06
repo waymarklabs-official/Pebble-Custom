@@ -488,8 +488,18 @@ def test_preflight_as_the_real_pi_will_see_it_today(pi: Callable[..., Result]) -
         ".env has no RINGHUB_TAG, so compose would look for the ':main' image. Add this line to .env:"]
     assert "RINGHUB_TAG=claude-pebble-ring-automation-kqoqn3" in r.out
     assert r.lines("!") == [
+        ":443 also points at ringhub, which only needs :8445. If another app used that address, give it back: "
+        "sudo tailscale serve --https=443 off",
         "something already listens on :8787 (fine if it's ringhub's own container from an earlier install)",
         "something already listens on :2586 (fine if it's ringhub's own container from an earlier install)"]
+
+
+def test_preflight_is_quiet_once_the_extra_address_is_given_back(pi: Callable[..., Result]) -> None:
+    status = json.loads(json.dumps(PI_STATUS))
+    status["TCP"].pop("443")
+    status["Web"].pop(f"{HOST}:443")
+    r = pi("preflight.sh", status=status)
+    assert r.code == 0 and not any("also points at" in line for line in r.lines("!"))
 
 
 def test_preflight_points_an_env_port_at_where_ntfy_really_is(pi: Callable[..., Result]) -> None:

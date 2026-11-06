@@ -402,8 +402,26 @@ def test_scripts_never_reset_or_remove_unverified_ports() -> None:
         assert "serve reset" not in code, script
         assert "tailscale funnel" not in code, script   # never changes what is public
         for line in code.splitlines():
+            if line.lstrip().startswith(("warn ", "fail ", "ok ", "info ", "echo ", "printf ")):
+                continue                                   # advice printed for a person, not run
             if " off" in line and "tailscale serve" in line:
                 assert '--https="$port" off' in line, f"{script.name}: {line.strip()}"
+
+
+def test_nothing_tells_you_to_publish_without_naming_a_port() -> None:
+    """`tailscale serve --bg 8787` (no --https=) takes the machine's plain https address. An early
+    instruction did exactly that and took over another app's address (T-Stream's add page)."""
+    import re
+
+    files = [*(ROOT / "docs").glob("*.md"), ROOT / "README.md", ROOT / "docker-compose.yml",
+             *(ROOT / "deploy").rglob("*.sh"), *(ROOT / "src" / "ringhub").rglob("*.py"),
+             *(ROOT / "src" / "ringhub" / "web").rglob("*.js")]
+    for f in files:
+        for m in re.finditer(r"tailscale (?:serve|funnel)\b[^`\n\"']*", f.read_text(encoding="utf-8")):
+            cmd = m.group(0)
+            publishes = "--bg" in cmd or re.search(r"\s(\d{2,5}|https?://\S+)\s*$", cmd)
+            if publishes:
+                assert "--https=" in cmd, f"{f.relative_to(ROOT)}: {cmd!r} publishes without naming a port"
 
 
 def test_pitools_runs_without_any_dependencies_installed() -> None:
