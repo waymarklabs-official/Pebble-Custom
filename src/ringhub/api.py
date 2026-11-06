@@ -650,7 +650,9 @@ def build_router(config: Config) -> APIRouter:
     async def integrations(svc: Svc) -> dict[str, Any]:
         rt = svc.runtime
         public = rt.links.public_url
-        out: dict[str, Any] = {"public_url": public}
+        cb = callback_url(public)
+        # Needed on your Tesla domain before Tesla can even be set up, so offered whatever its state.
+        out: dict[str, Any] = {"public_url": public, "callback_page": bridge_page(cb) if cb else None}
         if rt.tesla is None:
             out["tesla"] = {"enabled": False}
         else:

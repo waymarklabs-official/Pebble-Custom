@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from .envfile import DEFAULT_NTFY_PORT, DEFAULT_RING_PORT
+from .oauth import bridge_page, callback_url
 
 RING_TARGET = "http://127.0.0.1:8787"
 NTFY_TARGET = "http://127.0.0.1:2586"
@@ -464,6 +465,9 @@ def main(argv: list[str] | None = None) -> int:
     c = sub.add_parser("branch-tag", help="the image tag CI publishes for a branch name")
     c.add_argument("branch")
 
+    c = sub.add_parser("callback-page", help="the callback.html to host on your Tesla domain (from .env)")
+    c.add_argument("--env", type=Path, default=Path(".env"))
+
     args = p.parse_args(argv)
     try:
         if args.cmd == "ports":
@@ -492,6 +496,10 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if ok else 1
         elif args.cmd == "branch-tag":
             print(branch_tag(args.branch))
+        elif args.cmd == "callback-page":
+            url = (read_env(args.env) or {}).get("RINGHUB_PUBLIC_URL", "")
+            url_port(url, "RINGHUB_PUBLIC_URL")        # must be the https address the phone uses
+            sys.stdout.write(bridge_page(callback_url(url) or ""))
     except PiError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2

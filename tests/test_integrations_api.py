@@ -73,7 +73,10 @@ def test_integration_endpoints_need_the_admin(client: TestClient) -> None:
 def test_disabled_integration_says_what_to_set(make_client: Callable[..., TestClient],
                                                make_config: Callable[..., Config]) -> None:
     c = make_client(make_config())
-    assert c.get(f"{API}/integrations", headers=ADMIN_H).json()["tesla"] == {"enabled": False}
+    data = c.get(f"{API}/integrations", headers=ADMIN_H).json()
+    assert data["tesla"] == {"enabled": False}
+    # The page for your Tesla domain is offered before Tesla is turned on (it's needed to set Tesla up).
+    assert 'location.replace("https://hub.test/oauth/callback" + q)' in data["callback_page"]
     r = c.post(f"{API}/integrations/google/connect", headers=ADMIN_H)
     assert r.status_code == 409 and "GOOGLE_CLIENT_ID" in r.json()["detail"]
 
@@ -285,3 +288,10 @@ def test_check_command_warns_about_tesla_redirects(make_config: Callable[..., Co
     out = capsys.readouterr().out
     assert "tesla sign-in returns to: https://tesla-stream.tail51b89d.ts.net:8445/oauth/callback" in out
     assert "contain “tesla”" in out and "Tailscale address" in out
+
+
+def test_no_callback_page_without_a_public_url(make_client: Callable[..., TestClient],
+                                               make_config: Callable[..., Config]) -> None:
+    cfg = make_config()
+    c = make_client(cfg.model_copy(update={"server": cfg.server.model_copy(update={"public_url": None})}))
+    assert c.get(f"{API}/integrations", headers=ADMIN_H).json()["callback_page"] is None

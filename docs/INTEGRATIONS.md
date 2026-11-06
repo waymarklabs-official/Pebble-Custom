@@ -109,8 +109,12 @@ polls, never wakes the car to check its state, and caches what it reads for 30 s
 cd ~/ringhub
 bash deploy/pi/tesla-keys.sh
 ```
-This makes `data/tesla/private-key.pem` (your signing key: back it up with `data/`, never share
-it), `public-key.pem`, and the proxy's TLS certificate. Running it again never replaces a key.
+This makes:
+- `data/tesla/private-key.pem`: your signing key. Back it up with `data/` and never share it.
+- `public-key.pem` and `callback.html`: the two files for your public site in step 2.
+- The proxy's TLS certificate.
+
+Running it again never replaces a key.
 
 ### 2. Put two files on a public site you control (not the Pi)
 
@@ -129,10 +133,12 @@ networking changes.
 2. Add three files:
    - `.well-known/appspecific/com.tesla.3p.public-key.pem`: the contents of
      `data/tesla/public-key.pem`. Tesla reads your key here.
-   - `callback.html`: the page from the dashboard (Setup → Integrations → Tesla → **Download
-     callback.html**). After you sign in, Tesla sends your browser here, and the page passes it
-     straight on to ringhub over Tailscale. It's static, contains no secrets, and only ever
-     forwards to your own ringhub address.
+   - `callback.html`: the contents of `data/tesla/callback.html` (step 1 makes it from
+     `RINGHUB_PUBLIC_URL` in `.env`; the dashboard also offers it under Setup → Integrations →
+     Tesla → **Download callback.html**). After you sign in, Tesla sends your browser here, and the
+     page passes it straight on to ringhub over Tailscale. It's static, contains no secrets, and
+     only ever forwards to your own ringhub address. If `RINGHUB_PUBLIC_URL` ever changes, run
+     step 1 again and replace this file.
    - `.nojekyll`: empty. Without it, GitHub Pages hides folders that start with a dot.
 3. **Settings → Pages →** deploy from the main branch. Then check in a browser that
    `https://waymarklabs-official.github.io/.well-known/appspecific/com.tesla.3p.public-key.pem`

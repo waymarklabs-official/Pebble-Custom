@@ -124,6 +124,32 @@ def test_key_script_never_replaces_a_key(tmp_path: Path) -> None:
     assert {f: (d / f).read_bytes() for f in first} == first
 
 
+
+def test_key_script_also_makes_the_callback_page(tmp_path: Path) -> None:
+    """callback.html is needed on the public site before Tesla can be set up, so it comes out of the
+    same step as the public key, made from RINGHUB_PUBLIC_URL in .env."""
+    import shutil
+    import subprocess
+
+    if shutil.which("openssl") is None:
+        pytest.skip("openssl not installed")
+    root = Path(__file__).resolve().parents[1]
+    (tmp_path / "deploy" / "pi").mkdir(parents=True)
+    shutil.copy(root / "deploy" / "pi" / "tesla-keys.sh", tmp_path / "deploy" / "pi")
+    (tmp_path / "src").symlink_to(root / "src")
+    run = lambda: subprocess.run(["bash", str(tmp_path / "deploy/pi/tesla-keys.sh")],  # noqa: E731
+                                 capture_output=True, text=True, timeout=60, check=True).stdout
+    page = tmp_path / "data" / "tesla" / "callback.html"
+    assert "callback.html: not made (no .env here yet)" in run() and not page.exists()
+    (tmp_path / ".env").write_text("RINGHUB_PUBLIC_URL=http://not-https\n")
+    assert "must look like https://" in run() and not page.exists()
+    (tmp_path / ".env").write_text("RINGHUB_PUBLIC_URL=https://tesla-stream.tail51b89d.ts.net:8445\n")
+    out = run()
+    assert "data/tesla/callback.html   ->  callback.html" in out
+    assert 'location.replace("https://tesla-stream.tail51b89d.ts.net:8445/oauth/callback" + q)' in page.read_text()
+    assert oct(page.stat().st_mode & 0o777) == "0o644"
+
+
 # ----------------------------------------------------------------------------- connecting
 
 

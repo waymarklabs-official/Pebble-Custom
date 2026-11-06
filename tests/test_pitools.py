@@ -414,3 +414,13 @@ def test_pitools_runs_without_any_dependencies_installed() -> None:
     r = subprocess.run([sys.executable, "-c", code], env={"PYTHONPATH": str(src)},
                        capture_output=True, text=True, timeout=30, check=False)
     assert r.returncode == 0 and r.stdout == "claude-x\n", r.stderr
+
+
+def test_cli_callback_page(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    env = tmp_path / ".env"
+    env.write_text("RINGHUB_PUBLIC_URL=https://pi.t.ts.net:8445\n")
+    assert pitools.main(["callback-page", "--env", str(env)]) == 0
+    assert 'location.replace("https://pi.t.ts.net:8445/oauth/callback" + q)' in capsys.readouterr().out
+    env.write_text("RINGHUB_PUBLIC_URL=\n")
+    assert pitools.main(["callback-page", "--env", str(env)]) == 2
+    assert "RINGHUB_PUBLIC_URL" in capsys.readouterr().err
