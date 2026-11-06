@@ -6,7 +6,7 @@ import asyncio
 import logging
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -62,6 +62,23 @@ LATE_REFERENCE_LIMIT = 7 * 86400
 
 def _clip(text: str, n: int = 80) -> str:
     return text if len(text) <= n else text[: n - 1].rstrip() + "…"
+
+
+
+def _push_id(r: Reminder, *, nag: bool) -> str:
+    """The ntfy sequence ID of one reminder alert.
+
+    Every alert needs its own: ntfy clients *replace* a notification that has the same sequence ID
+    instead of alerting again, so a snoozed reminder or a nag that reused the first alert's ID
+    arrived silently.
+    """
+    return f"rem-{r.id}-{r.snoozes}" + ("-nag" if nag else "")
+
+
+def _round_push_ids(r: Reminder, snoozes: int) -> list[str]:
+    """Every alert that can be showing for snooze round `snoozes`, plus the old single ID."""
+    at = replace(r, snoozes=snoozes)
+    return [_push_id(at, nag=False), _push_id(at, nag=True), f"rem-{r.id}"]
 
 
 class Memory:
@@ -385,8 +402,15 @@ class Memory:
     async def nag(self, rid: str) -> None:
         r = await self.rt.reminders.get(rid)
         if r is not None and r.status == "fired":
+            # The nag is a new alert; the first one is now stale (dismissed on Android/web).
+            await self._clear_pushes([_push_id(r, nag=False)])
             await self._push_reminder(r, nag=True)
             await self.set_attention("reminder", r.id)
+
+    async def _clear_pushes(self, ids: list[str]) -> None:
+        topic = self.rt.notifier.topic_for("reminder")
+        for seq in ids:
+            await self.rt.notifier.clear(seq, topic)
 
     async def _push_reminder(self, r: Reminder, *, nag: bool) -> None:
         actions: list[dict[str, Any]] = []
@@ -401,7 +425,7 @@ class Memory:
         # The watch shows the title + first line: the reminder itself goes in the title.
         await self.rt.feedback.say(
             detail, title=f"{'⏰ Still: ' if nag else '⏰ '}{_clip(r.text, 70)}", level="important",
-            tags=["alarm_clock"], actions=actions or None, kind="reminder", sequence_id=f"rem-{r.id}",
+            tags=["alarm_clock"], actions=actions or None, kind="reminder", sequence_id=_push_id(r, nag=nag),
             click=f"{self.rt.links.public_url}/#/memory" if self.rt.links.public_url else None,
         )
 
@@ -409,7 +433,7 @@ class Memory:
         r = await self.rt.reminders.mark_done(rid)
         await self._drop_jobs(rid)
         if r is not None:
-            await self.rt.notifier.clear(f"rem-{rid}", self.rt.notifier.topic_for("reminder"))
+            await self._clear_pushes(_round_push_ids(r, r.snoozes))
         await self.clear_attention("reminder", rid)
         return r
 
@@ -419,11 +443,15 @@ class Memory:
             await self.rt.scheduler.cancel(f"nag:{rid}")
             await self.schedule(r)
             await self.clear_attention("reminder", rid)
+            await self._clear_pushes(_round_push_ids(r, r.snoozes - 1))   # the alerts just snoozed
         return r
 
     async def cancel(self, rid: str) -> Reminder | None:
         r = await self.rt.reminders.cancel(rid)
         await self._drop_jobs(rid)
+        if r is not None:
+            await self._clear_pushes(_round_push_ids(r, r.snoozes))
+            await self.clear_attention("reminder", rid)
         return r
 
     async def _drop_jobs(self, rid: str) -> None:

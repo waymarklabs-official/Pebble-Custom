@@ -308,7 +308,7 @@ async def test_arrive_reminder_fires_once(rt: Runtime, ntfy: NtfyMock) -> None:
     push = ntfy.find("Take the chicken out")
     assert push["title"] == "⏰ Take the chicken out"
     assert push["message"] == "Arrived at Home · Ring: click = done · double = snooze"
-    assert push["priority"] == 4 and push["sequence_id"] == f"rem-{r.id}"
+    assert push["priority"] == 4 and push["sequence_id"] == f"rem-{r.id}-0"
     assert (await rt.reminders.get(r.id)).status == "fired"  # type: ignore[union-attr]
     await rt.context.leave("home", at=t + 600)
     await rt.context.arrive("home", at=t + 1200)
@@ -350,7 +350,7 @@ async def test_place_reminder_for_several_pending(rt: Runtime, ntfy: NtfyMock) -
     a = await rt.reminders.add("one", "arrive", place="home")
     b = await rt.reminders.add("two", "arrive", place="home")
     await rt.context.arrive("home")
-    assert {x["sequence_id"] for x in ntfy.bodies} == {f"rem-{a.id}", f"rem-{b.id}"}
+    assert {x["sequence_id"] for x in ntfy.bodies} == {f"rem-{a.id}-0", f"rem-{b.id}-0"}
 
 
 # ----------------------------------------------------------------------------- timed delivery
@@ -364,7 +364,7 @@ async def test_time_reminder_fires_via_scheduler_with_signed_buttons(rt: Runtime
     assert push["title"] == "⏰ Call the bank about the card"
     assert push["message"] == "Ring: click = done · double = snooze"
     assert push["priority"] == 4 and push["tags"] == ["alarm_clock"] and push["topic"] == "ring"
-    assert push["sequence_id"] == f"rem-{r.id}"
+    assert push["sequence_id"] == f"rem-{r.id}-0"
     assert push["click"] == "https://hub.test/#/memory"
     done, snooze = push["actions"]
     assert (done["action"], done["label"], done["method"], done["clear"]) == ("http", "Done", "POST", True)
@@ -402,7 +402,8 @@ async def test_nag_only_when_unacknowledged(rt: Runtime, ntfy: NtfyMock) -> None
     await rt.memory.clear_attention("reminder")
     await rt.memory.nag(r.id)
     assert ntfy.last()["title"] == "⏰ Still: Water the plants"
-    assert ntfy.last()["sequence_id"] == f"rem-{r.id}"
+    assert ntfy.last()["sequence_id"] == f"rem-{r.id}-0-nag"     # a new alert, not a silent update
+    assert str(ntfy.clear.calls.last.request.url).endswith(f"/rem-{r.id}-0/clear")   # first alert dismissed
     assert (await rt.store.get(ATTENTION_REMINDER))["ref"] == r.id  # the ring answers it again
     await rt.memory.done(r.id)
     assert f"nag:{r.id}" not in {j.id for j in await rt.scheduler.pending()}
@@ -420,7 +421,9 @@ async def test_reminders_topic_and_clear_on_done(make_runtime: Factory, make_con
     assert ntfy.last()["topic"] == "ring-rem"
     await rt.memory.done(r.id)
     assert ntfy.clear.called
-    assert str(ntfy.clear.calls.last.request.url) == f"https://ntfy.test/ring-rem/rem-{r.id}/clear"
+    cleared = {str(c.request.url) for c in ntfy.clear.calls}
+    assert {f"https://ntfy.test/ring-rem/rem-{r.id}-0/clear", f"https://ntfy.test/ring-rem/rem-{r.id}-0-nag/clear"} \
+        <= cleared
     # confirmations still go to the main topic
     await rt.feedback.say("hi")
     assert ntfy.last()["topic"] == "ring"
@@ -483,6 +486,35 @@ async def test_double_after_fire_snoozes(rt: Runtime, engine: Engine, ntfy: Ntfy
     assert f"reminder:{rid}" in jobs and f"nag:{rid}" not in jobs
     assert ntfy.last()["message"] == "😴 Snoozed 10 min · Take out the trash"
     assert await rt.store.get(ATTENTION_REMINDER) is None
+
+
+async def test_snoozed_reminder_alerts_again_as_a_new_notification(rt: Runtime, ntfy: NtfyMock) -> None:
+    """The bug: the re-fired reminder reused the first alert's ntfy sequence ID, so the phone
+    replaced the old notification silently instead of alerting."""
+    rid = await fired(rt)
+    first = ntfy.last()
+    assert first["sequence_id"] == f"rem-{rid}-0"
+    ntfy.reset()
+    await rt.memory.snooze(rid, timedelta(seconds=0.3))
+    assert any(str(c.request.url).endswith(f"/rem-{rid}-0/clear") for c in ntfy.clear.calls)
+    await eventually(lambda: len(ntfy.bodies) >= 1, within=5)   # the real scheduler fires it
+    again = ntfy.last()
+    assert again["title"] == "⏰ Take out the trash" and again["priority"] >= 4
+    assert again["sequence_id"] == f"rem-{rid}-1" != first["sequence_id"]
+    r = await rt.reminders.get(rid)
+    assert r is not None and (r.status, r.snoozes) == ("fired", 1)
+    assert (await rt.store.get(ATTENTION_REMINDER))["ref"] == rid      # click/double answer it again
+    assert f"nag:{rid}" in {j.id for j in await rt.scheduler.pending()}  # and it will nag if ignored
+
+
+async def test_every_alert_of_a_reminder_is_its_own_notification(rt: Runtime, ntfy: NtfyMock) -> None:
+    rid = await fired(rt)                                      # alert 1
+    await rt.memory.nag(rid)                                   # alert 2
+    await rt.memory.snooze(rid, timedelta(seconds=0))
+    await eventually(lambda: len(ntfy.bodies) >= 3, within=5)  # alert 3 (re-fired)
+    await rt.memory.nag(rid)                                   # alert 4
+    ids = [b["sequence_id"] for b in ntfy.bodies if "sequence_id" in b]
+    assert ids == [f"rem-{rid}-0", f"rem-{rid}-0-nag", f"rem-{rid}-1", f"rem-{rid}-1-nag"]
 
 
 async def test_attention_expires_after_the_ack_window(rt: Runtime, engine: Engine) -> None:
