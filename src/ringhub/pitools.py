@@ -342,7 +342,7 @@ def check_image(ref_text: str, arch: str, opener: Opener = urllib.request.urlope
             return False, (f"{ref_text}: no such image. Check the repository's Actions tab for a green run "
                            "on that branch, or use a tag it published")
         if e.code in (401, 403):
-            return False, f"{ref_text}: access denied (HTTP {e.code}); the package may be private"
+            return False, f"{ref_text}: access denied (HTTP {e.code}): no such image there, or it is private"
         return False, f"{ref_text}: registry answered HTTP {e.code}"
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         reason = getattr(e, "reason", e)

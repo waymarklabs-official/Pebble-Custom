@@ -37,6 +37,16 @@ else
     fail "out of date: GitHub has ${REMOTE_SHA:0:7}, this is $REV. Run: git pull   then run this check again"
   fi
 fi
+# Your settings live in .env and config.yaml, which git ignores. A changed tracked file (say, a
+# docker-compose.yml still naming an old self-built image) means this isn't the tested setup, and it
+# can also make `git pull` refuse to update. --no-optional-locks: status must not rewrite .git/index
+# (under sudo it would become root-owned and break your next git pull).
+CHANGED="$(g --no-optional-locks status --porcelain --untracked-files=no 2>/dev/null | cut -c4-)"
+if [ -n "$CHANGED" ]; then
+  fail "files changed on this machine, so this isn't the tested setup (settings belong in .env and config.yaml):"
+  while read -r f; do info "$f"; done <<<"$CHANGED"
+  info "see the changes: git diff      put the files back: git checkout HEAD -- ${CHANGED//$'\n'/ }"
+fi
 
 echo "Machine"
 ARCH=""
@@ -117,10 +127,14 @@ fi
 if [ -z "$ARCH" ]; then
   warn "skipping the image check (architecture unknown)"
 else
+  REFS="$(pit compose-images --env .env --tag "$TAG")"
+  if ! grep -q '^ghcr\.io/waymarklabs-official/pebble-custom:' <<<"$REFS"; then
+    fail "docker-compose.yml doesn't run the published ringhub image (it names $(head -1 <<<"$REFS")). Put it back: git checkout HEAD -- docker-compose.yml"
+  fi
   while read -r ref; do
     [ -n "$ref" ] || continue
     if msg="$(pit image "$ref" --arch "$ARCH")"; then ok "$msg"; else fail "$msg"; fi
-  done < <(pit compose-images --env .env --tag "$TAG")
+  done <<<"$REFS"
 fi
 
 echo "Tailscale"

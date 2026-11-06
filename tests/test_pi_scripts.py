@@ -91,7 +91,8 @@ for h in ${FAKE_BLOCKED:-}; do case "$url" in *"$h"*) printf 000; exit 0;; esac;
 printf 401''',
     "ss": '''echo "State Recv-Q Send-Q Local Address:Port Peer Address:Port"
 for p in ${FAKE_LISTEN:-}; do echo "LISTEN 0 4096 0.0.0.0:$p 0.0.0.0:*"; done''',
-    "git": '''while [ "$1" = -c ]; do shift 2; done
+    "git": '''while :; do case "$1" in -c) shift 2;; --no-optional-locks) shift;; *) break;; esac; done
+[ "$1" = status ] && { for f in ${FAKE_DIRTY:-}; do echo " M $f"; done; exit 0; }
 case "$1 $2" in
   "rev-parse --short=7") echo "${FAKE_HEAD:0:7}";;
   "rev-parse --abbrev-ref") echo "$FAKE_BRANCH";;
@@ -137,7 +138,8 @@ def pi(tmp_path: Path) -> Callable[..., Result]:
         f.chmod(f.stat().st_mode | stat.S_IEXEC)
 
     def run(script: str, *args: str, env_file: str | None = ENV_8445, status: dict[str, Any] | None = None,
-            **fake: str) -> Result:
+            compose: str | None = None, **fake: str) -> Result:
+        (repo / "docker-compose.yml").write_text(compose or (ROOT / "docker-compose.yml").read_text())
         env_path = repo / ".env"
         if env_file is None:
             env_path.unlink(missing_ok=True)
@@ -190,6 +192,26 @@ def test_preflight_ahead_of_github_or_offline_still_works(pi: Callable[..., Resu
     assert offline.code == 0 and any("couldn't ask GitHub" in line for line in offline.lines("!"))
     pinned = pi("preflight.sh", fake_branch="HEAD")
     assert pinned.code == 0 and any(line.startswith("pinned to commit") for line in pinned.lines("✓"))
+
+
+def test_preflight_flags_files_changed_on_the_pi(pi: Callable[..., Result]) -> None:
+    """Settings belong in .env/config.yaml; an edited tracked file isn't the tested setup."""
+    r = pi("preflight.sh", fake_dirty="docker-compose.yml deploy/pi/serve.sh")
+    assert r.code == 1
+    assert any(line.startswith("files changed on this machine") for line in r.lines("✗"))
+    assert "put the files back: git checkout HEAD -- docker-compose.yml deploy/pi/serve.sh" in r.out
+
+
+def test_preflight_explains_a_compose_file_naming_the_old_self_built_image(pi: Callable[..., Result]) -> None:
+    """What a Pi showed: docker-compose.yml still said `image: ringhub:latest`."""
+    old = (ROOT / "docker-compose.yml").read_text().replace(
+        "image: ghcr.io/waymarklabs-official/pebble-custom:${RINGHUB_TAG:-main}", "build: .\n    image: ringhub:latest")
+    assert "ringhub:latest" in old
+    r = pi("preflight.sh", compose=old, fake_dirty="docker-compose.yml",
+           fake_missing_images="ringhub:latest")
+    assert r.code == 1
+    assert ("docker-compose.yml doesn't run the published ringhub image (it names ringhub:latest). "
+            "Put it back: git checkout HEAD -- docker-compose.yml") in r.lines("✗")
 
 
 def test_preflight_asks_for_a_missing_image_tag(pi: Callable[..., Result]) -> None:
