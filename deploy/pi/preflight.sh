@@ -14,6 +14,29 @@ pit()  { PYTHONPATH=src python3 -m ringhub.pitools "$@"; }
 WARN=0; FAIL=0
 RING_TARGET=http://127.0.0.1:8787
 NTFY_TARGET=http://127.0.0.1:2586
+g() { git -c safe.directory="$PWD" "$@"; }   # also works when run with sudo in a user's checkout
+
+REV="$(g rev-parse --short=7 HEAD 2>/dev/null || echo unknown)"
+BRANCH="$(g rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+echo "ringhub preflight $REV${BRANCH:+ ($BRANCH)}"
+echo "This checkout"
+# Old scripts check old things (an older preflight looked at ports 8443/8444). Compare with GitHub
+# first; `git ls-remote` only reads, it changes nothing here.
+if [ -z "$BRANCH" ] || [ "$BRANCH" = HEAD ]; then
+  ok "pinned to commit $REV (not on a branch, so not compared with GitHub)"
+else
+  HEAD_SHA="$(g rev-parse HEAD 2>/dev/null)"
+  REMOTE_SHA="$(GIT_TERMINAL_PROMPT=0 timeout 20 git -c safe.directory="$PWD" ls-remote origin "refs/heads/$BRANCH" 2>/dev/null | cut -f1)"
+  if [ -z "$REMOTE_SHA" ]; then
+    warn "couldn't ask GitHub for the newest $BRANCH (offline, or not pushed); checking $REV as it is"
+  elif [ "$REMOTE_SHA" = "$HEAD_SHA" ]; then
+    ok "up to date with GitHub"
+  elif g merge-base --is-ancestor "$REMOTE_SHA" HEAD 2>/dev/null; then
+    ok "ahead of GitHub (local commits on top of ${REMOTE_SHA:0:7})"
+  else
+    fail "out of date: GitHub has ${REMOTE_SHA:0:7}, this is $REV. Run: git pull   then run this check again"
+  fi
+fi
 
 echo "Machine"
 ARCH=""
@@ -78,7 +101,6 @@ for url in https://ghcr.io/v2/ https://pkg-containers.githubusercontent.com/ \
     *) fail "cannot reach ${url#https://} (HTTP '${code:-none}'): this network blocks image downloads";;
   esac
 done
-BRANCH="$(git -c safe.directory="$PWD" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
 BRANCH_TAG=""
 [ -n "$BRANCH" ] && [ "$BRANCH" != HEAD ] && BRANCH_TAG="$(pit branch-tag "$BRANCH" 2>/dev/null)"
 TAG=""
