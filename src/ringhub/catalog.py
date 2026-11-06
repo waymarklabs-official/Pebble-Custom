@@ -63,7 +63,7 @@ class Place(_Doc):
 # ----------------------------------------------------------------------------- skills
 
 Template = Literal["moment", "note", "list", "next", "recall", "notify", "webhook", "car_smart", "car_command",
-                   "tv", "custom", "builtin"]
+                   "car_action", "car_status", "calendar_agenda", "tv", "custom", "builtin"]
 
 
 class Skill(_Doc):

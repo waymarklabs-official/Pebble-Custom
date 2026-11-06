@@ -98,10 +98,11 @@ NTFY_URL = "https://ntfy.test/"
 
 TESLA_BASE = "https://tesla.test"
 TESLA_AUTH = "https://auth.tesla.test/oauth2/v3/token"
-TESLA_VIN = "5YJTEST000000001"
+TESLA_VIN = "5YJTEST0000000001"
 TESLA_VEHICLE = f"{TESLA_BASE}/api/1/vehicles/{TESLA_VIN}"
 TESLA_CONFIG: dict[str, Any] = {"tesla": {
-    "base_url": TESLA_BASE, "vin": TESLA_VIN, "client_id": "client-id", "refresh_token": "refresh-0",
+    "base_url": TESLA_BASE, "read_url": TESLA_BASE, "vin": TESLA_VIN, "client_id": "client-id",
+    "refresh_token": "refresh-0",
     "auth_url": TESLA_AUTH, "state_ttl_seconds": 30, "wake_timeout_seconds": 5,
 }}
 

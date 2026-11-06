@@ -10,7 +10,9 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from ..actions.base import ActionError
 from ..intents import normalize
+from .calendar import agenda_window, describe_when, format_agenda, is_agenda_question, parse_event
 from .notes import Note
 from .parse import ParsedReminder, parse_reminder
 from .reminders import Reminder
@@ -30,7 +32,7 @@ SNOOZE = timedelta(minutes=10)
 
 @dataclass(frozen=True, slots=True)
 class CaptureResult:
-    kind: str  # "note" | "reminder" | "answer" | "skill" | "empty"
+    kind: str  # "note" | "reminder" | "answer" | "skill" | "empty" | "calendar"
     message: str
     note: Note | None = None
     reminder: Reminder | None = None
@@ -180,6 +182,11 @@ class Memory:
             current = time.time()
             ref = said_at if current - LATE_REFERENCE_LIMIT <= said_at <= current + 300 else current
             now = datetime.fromtimestamp(ref, self.rt.config.tz)
+            if self.rt.gcal is not None:
+                event = await self._calendar_capture(text, now, said_at=said_at, place=place, mode=mode,
+                                                     audio=audio, source=source)
+                if event is not None:
+                    return event
             parsed = parse_reminder(text, now, await self.place_aliases())
             if parsed is None and self.rt.llm is not None:
                 parsed = await self.rt.llm.extract_reminder(text, now, await self.place_aliases())
@@ -195,6 +202,44 @@ class Memory:
         await self.set_attention("capture", {"note": note.id})
         where = f" · {await self.place_label(place)}" if place else ""
         return CaptureResult("note", f"📝 {_clip(text)}{where}", note=note)
+
+    async def _calendar_capture(self, text: str, now: datetime, *, said_at: float, place: str | None,
+                                mode: str | None, audio: str | None, source: str | None) -> CaptureResult | None:
+        """"add dentist to my calendar Friday at 3" -> a Google Calendar event (None: not a calendar request)."""
+        assert self.rt.gcal is not None
+        ev = parse_event(text, now, self.rt.gcal.config.default_minutes)
+        if ev is None:
+            return None
+
+        async def keep_as_note(why: str) -> CaptureResult:
+            note = await self.rt.notes.add(text, kind="note", created_at=said_at, place=place, mode=mode,
+                                           audio=audio, source=source)
+            await self.mirror(note)
+            await self.set_attention("capture", {"note": note.id})
+            return CaptureResult("note", f"📅 {why} — saved as a note: {_clip(text, 60)}", note=note)
+
+        if ev.start is None or ev.end is None:
+            return await keep_as_note("No date heard (say e.g. “add dentist to my calendar Friday at 3”)")
+        if not await self.rt.gcal.connected():
+            return await keep_as_note("Google Calendar isn't connected (Setup → Integrations)")
+        try:
+            event = await self.rt.gcal.add_event(ev.title, ev.start, ev.end,
+                                                 description=f"Added by ringhub from: “{text}”")
+        except ActionError as e:
+            log.warning("calendar add failed: %s", e)
+            return await keep_as_note(f"Couldn't add it to your calendar ({e})")
+        await self.set_attention("capture", {"calendar": event["id"], "title": ev.title})
+        return CaptureResult("calendar", f"📅 {_clip(ev.title, 60)} · {describe_when(ev, now)}")
+
+    async def agenda(self, kind: str, day: str) -> str:
+        assert self.rt.gcal is not None
+        now = self.rt.now()
+        start, end, label = agenda_window(kind, day, now)
+        try:
+            events = await self.rt.gcal.events(start, end, limit=1 if kind == "next" else 10)
+        except ActionError as e:
+            return f"📅 {e}"
+        return format_agenda(events, label, now)
 
     async def _create_reminder(self, parsed: ParsedReminder, original: str, *, said_at: float,
                                place: str | None, mode: str | None, audio: str | None,
@@ -225,6 +270,13 @@ class Memory:
 
     async def undo_last_capture(self, ref: dict[str, Any]) -> str:
         parts = []
+        if ref.get("calendar") and self.rt.gcal is not None:
+            try:
+                await self.rt.gcal.delete_event(str(ref["calendar"]))
+                parts.append("calendar event")
+            except ActionError as e:
+                await self.clear_attention("capture")
+                return f"⚠️ Couldn't remove “{_clip(str(ref.get('title') or 'the event'), 40)}” from your calendar: {e}"
         if ref.get("reminder"):
             await self.cancel(str(ref["reminder"]))
             parts.append("reminder")
@@ -263,6 +315,8 @@ class Memory:
     # ------------------------------------------------------------------ recall
 
     async def answer(self, text: str) -> str | None:
+        if self.rt.gcal is not None and (agenda := is_agenda_question(text)) is not None:
+            return await self.agenda(*agenda)
         q = _FILLER.sub("", normalize(text)).strip()
         if _Q_PARKED.match(q):
             return await self.where_parked()

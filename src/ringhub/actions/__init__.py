@@ -1,6 +1,6 @@
 """Importing this package registers every built-in action."""
 
-from . import content, core, memory, tesla, tv
+from . import calendar, car, content, core, memory, tesla, tv
 from .base import REGISTRY, ActionError
 
-__all__ = ["REGISTRY", "ActionError", "content", "core", "memory", "tesla", "tv"]
+__all__ = ["REGISTRY", "ActionError", "calendar", "car", "content", "core", "memory", "tesla", "tv"]

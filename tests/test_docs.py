@@ -25,7 +25,7 @@ def test_doc_has_blocks() -> None:
 
 @pytest.mark.parametrize("block", BLOCKS, ids=[f"block{i}" for i in range(len(BLOCKS))])
 def test_recipe_block_validates(block: str, make_config: Callable[..., Config]) -> None:
-    cfg = make_config({"tesla": {"base_url": "https://localhost:4443", "vin": "5YJ", "client_id": "c",
+    cfg = make_config({"tesla": {"base_url": "https://localhost:4443", "vin": "5YJYGDEE1MF000001", "client_id": "c",
                                  "refresh_token": "r"}})
     doc = json.loads(block)
     seeded = default_catalog(cfg)

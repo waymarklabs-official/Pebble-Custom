@@ -25,6 +25,8 @@ from typing import Annotated, Any, Literal, TypeGuard
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field, ValidationError
 
+from .actions.base import ActionError
+from .actions.car import describe_state
 from .catalog import BUILTIN_SKILLS, FALLBACK_MODE, CatalogError, Mode, Place, Skill, slugify
 from .config import Config, GestureField
 from .context import KEY_RE
@@ -32,6 +34,7 @@ from .engine import Engine, label
 from .executor import StepError, validate_skill_steps
 from .models import RingEvent
 from .modes import binding
+from .oauth import new_state, redirect_uri
 from .runtime import Runtime
 from .store import Store
 from .templates import TemplateError, compile_skill, describe
@@ -187,6 +190,10 @@ async def handle_owntracks(svc: Services, msg: dict[str, Any]) -> list[dict[str,
 # ----------------------------------------------------------------------------- bodies
 
 
+class VehicleBody(BaseModel):
+    vin: str | None = Field(None, pattern=r"^[A-HJ-NPR-Z0-9]{17}$")
+
+
 class LoginBody(BaseModel):
     token: str = Field(max_length=500)
 
@@ -295,7 +302,8 @@ def build_router(config: Config) -> APIRouter:
         return {
             "mode": res.mode.model_dump(mode="json"), "reason": res.reason, "manual": res.manual,
             "gestures": gestures, "context": ctx, "attention": att, "reminders": upcoming, "notes": recent,
-            "vehicle": vehicle, "features": {"tesla": rt.tesla is not None, "ntfy": rt.notifier.enabled,
+            "vehicle": vehicle, "features": {"tesla": rt.tesla is not None, "google": rt.gcal is not None,
+                                             "ntfy": rt.notifier.enabled,
                                              "llm": rt.llm is not None, "tv": bool(svc.config.devices),
                                              "links": rt.links.public_url is not None},
         }
@@ -595,6 +603,99 @@ def build_router(config: Config) -> APIRouter:
     @r.get("/events", dependencies=Admin)
     async def events(svc: Svc, limit: int = 100) -> list[dict[str, Any]]:
         return await svc.store.recent_events(max(1, min(limit, 500)))
+
+    # ------------------------------------------------------------------ integrations (Tesla, Google)
+
+    def _client(svc: Services, provider: str) -> Any:
+        client = svc.runtime.tesla if provider == "tesla" else svc.runtime.gcal
+        if client is None:
+            var = "TESLA_CLIENT_ID" if provider == "tesla" else "GOOGLE_CLIENT_ID"
+            raise HTTPException(409, f"{provider} is off: set {var} in .env and restart (docs/INTEGRATIONS.md)")
+        return client
+
+    @r.get("/integrations", dependencies=Admin)
+    async def integrations(svc: Svc) -> dict[str, Any]:
+        rt = svc.runtime
+        public = rt.links.public_url
+        out: dict[str, Any] = {"public_url": public}
+        if rt.tesla is None:
+            out["tesla"] = {"enabled": False}
+        else:
+            cfg = rt.tesla.config
+            connected = await rt.tesla.connected()
+            try:
+                key: str | None = rt.tesla.local_public_key()
+                key_error = None
+            except ActionError as e:
+                key, key_error = None, str(e)
+            out["tesla"] = {
+                "enabled": True, "connected": connected, "vin": await rt.tesla.vin(),
+                "region": await rt.tesla.region() if connected else None, "domain": cfg.domain,
+                "pairing_link": rt.tesla.pairing_link(),
+                "has_secret": bool(cfg.client_secret and cfg.client_secret.get_secret_value()),
+                "public_key": key, "public_key_error": key_error,
+                "public_key_url": f"https://{cfg.domain}/.well-known/appspecific/com.tesla.3p.public-key.pem"
+                if cfg.domain else None,
+                "redirect_uri": redirect_uri(public, "tesla"),
+            }
+        if rt.gcal is None:
+            out["google"] = {"enabled": False}
+        else:
+            out["google"] = {"enabled": True, "connected": await rt.gcal.connected(),
+                             "account": await rt.gcal.account(), "calendar_id": rt.gcal.config.calendar_id,
+                             "redirect_uri": redirect_uri(public, "google")}
+        return out
+
+    @r.post("/integrations/{provider}/connect", dependencies=Admin)
+    async def integration_connect(provider: Literal["tesla", "google"], svc: Svc) -> dict[str, Any]:
+        client = _client(svc, provider)
+        ru = redirect_uri(svc.runtime.links.public_url, provider)
+        if ru is None:
+            raise HTTPException(409, "set server.public_url (RINGHUB_PUBLIC_URL) first: the sign-in returns there")
+        if provider == "tesla" and not client.config.client_secret:
+            raise HTTPException(409, "set TESLA_CLIENT_SECRET in .env and restart")
+        return {"url": client.authorize_url(await new_state(svc.store, provider), ru), "redirect_uri": ru}
+
+    @r.post("/integrations/{provider}/disconnect", dependencies=Admin)
+    async def integration_disconnect(provider: Literal["tesla", "google"], svc: Svc) -> dict[str, Any]:
+        await _client(svc, provider).disconnect()
+        return {"ok": True}
+
+    @r.get("/integrations/tesla/vehicles", dependencies=Admin)
+    async def tesla_vehicles(svc: Svc) -> list[dict[str, Any]]:
+        try:
+            return list(await _client(svc, "tesla").vehicles())
+        except ActionError as e:
+            raise HTTPException(502, str(e)) from None
+
+    @r.post("/integrations/tesla/vehicle", dependencies=Admin)
+    async def tesla_pick_vehicle(body: VehicleBody, svc: Svc) -> dict[str, Any]:
+        try:
+            vin = await _client(svc, "tesla").select_vehicle(body.vin)
+        except ActionError as e:
+            raise HTTPException(400, str(e)) from None
+        if svc.runtime.vehicle is not None:
+            svc.runtime.vehicle.invalidate()
+        return {"vin": vin}
+
+    @r.post("/integrations/tesla/register", dependencies=Admin)
+    async def tesla_register(svc: Svc) -> dict[str, Any]:
+        try:
+            return dict(await _client(svc, "tesla").register_domain())
+        except ActionError as e:
+            raise HTTPException(502, str(e)) from None
+
+    @r.post("/integrations/tesla/check", dependencies=Admin)
+    async def tesla_check(svc: Svc) -> dict[str, Any]:
+        """The car's state, without waking it (also proves the account connection works)."""
+        rt = svc.runtime
+        _client(svc, "tesla")
+        assert rt.vehicle is not None and rt.tesla is not None
+        rt.vehicle.invalidate()
+        state = await rt.vehicle.state()
+        if state is None:
+            raise HTTPException(502, "couldn't reach the car through Fleet API (see the activity log)")
+        return {"summary": describe_state(state, rt.tesla.config.temperature_unit), **state.as_dict()}
 
     @r.get("/setup", dependencies=Admin)
     async def setup(svc: Svc) -> dict[str, Any]:

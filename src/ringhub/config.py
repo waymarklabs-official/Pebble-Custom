@@ -200,21 +200,88 @@ class MediaSourceConfig(_Strict):
     headers: dict[str, str] = Field(default_factory=dict)
 
 
-class TeslaConfig(_Strict):
-    """Tesla Fleet API, reached through Tesla's ``tesla-http-proxy`` for signed commands."""
+TeslaRegion = Literal["na", "eu", "cn"]
 
-    base_url: str
-    """Usually your vehicle-command proxy, e.g. https://localhost:4443"""
-    vin: str
+
+class TeslaConfig(_Strict):
+    """Tesla Fleet API. Commands go through Tesla's ``tesla-http-proxy``, which signs them (a Model Y
+    only accepts signed commands); state reads go straight to Fleet API. Connect the account in the
+    dashboard (Setup → Integrations): the hub keeps the rotating refresh token itself.
+    See docs/INTEGRATIONS.md."""
+
     client_id: str
-    refresh_token: SecretStr
-    auth_url: str = "https://fleet-auth.prd.vn.cloud.tesla.com/oauth2/v3/token"
+    """From your app at developer.tesla.com. An empty value turns the car integration off."""
+    client_secret: SecretStr | None = None
+    """Needed to connect the account and to register your domain (one-time steps)."""
+    domain: str | None = Field(None, pattern=r"^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$")
+    """The domain that hosts your public key (e.g. you.github.io); the car shows it on its Locks screen."""
+    base_url: str | None = "https://tesla-proxy:4443"
+    """The vehicle-command proxy (the compose service ``tesla-proxy``)."""
     ca_cert: Path | None = None
-    """CA bundle for the proxy's self-signed TLS cert."""
+    """The proxy's self-signed TLS certificate (deploy/pi/tesla-keys.sh makes it)."""
+    public_key: Path | None = None
+    """Your public key, to check that the domain registration matches it."""
     read_url: str | None = None
-    """Where state reads go (defaults to base_url; the proxy forwards them unchanged)."""
+    """Where state reads go; defaults to Fleet API for your region."""
+    region: TeslaRegion | None = None
+    """Learned when you connect; set it only to override."""
+    vin: str | None = Field(None, pattern=r"^[A-HJ-NPR-Z0-9]{17}$")
+    """Picked in the dashboard when you connect; set it only to override."""
+    refresh_token: SecretStr | None = None
+    """Bootstrap only (the dashboard's Connect does this for you)."""
+    auth_url: str = "https://fleet-auth.prd.vn.cloud.tesla.com/oauth2/v3/token"
+    authorize_url: str = "https://auth.tesla.com/oauth2/v3/authorize"
+    scopes: str = "openid offline_access vehicle_device_data vehicle_location vehicle_cmds vehicle_charging_cmds"
     state_ttl_seconds: float = Field(30, ge=5, le=600)
     wake_timeout_seconds: float = 45.0
+    temperature_unit: Literal["F", "C"] = "F"
+    """How the hub speaks temperatures (the car always takes Celsius)."""
+
+    @field_validator("client_secret", "domain", "base_url", "ca_cert", "public_key", "read_url", "region", "vin",
+                     "refresh_token", mode="before")
+    @classmethod
+    def _blank_is_unset(cls, v: Any) -> Any:
+        return None if isinstance(v, str) and not v.strip() else v
+
+    @field_validator("base_url", mode="after")
+    @classmethod
+    def _default_proxy(cls, v: str | None) -> str:
+        return v or "https://tesla-proxy:4443"
+
+
+class GoogleConfig(_Strict):
+    """Google Calendar: add events by voice, hear your agenda. Connect in the dashboard
+    (Setup → Integrations). See docs/INTEGRATIONS.md."""
+
+    client_id: str
+    """OAuth client (type "Web application") from console.cloud.google.com. Empty turns it off."""
+    client_secret: SecretStr
+    calendar_id: str = "primary"
+    """Which calendar new events go to ("primary" is your main one)."""
+    default_minutes: int = Field(60, ge=5, le=1440)
+    """Length of an event when you don't say one ("for 30 minutes")."""
+    authorize_url: str = "https://accounts.google.com/o/oauth2/v2/auth"
+    token_url: str = "https://oauth2.googleapis.com/token"  # noqa: S105 - a URL
+    api_url: str = "https://www.googleapis.com/calendar/v3"
+
+    @field_validator("client_secret", mode="after")
+    @classmethod
+    def _secret_set(cls, v: SecretStr) -> SecretStr:
+        if not v.get_secret_value().strip():
+            raise ValueError("set GOOGLE_CLIENT_SECRET (Google Calendar is on because GOOGLE_CLIENT_ID is set)")
+        return v
+
+    @field_validator("calendar_id", mode="before")
+    @classmethod
+    def _primary_by_default(cls, v: Any) -> Any:
+        return "primary" if isinstance(v, str) and not v.strip() else v
+
+
+def _off_when_unset(v: Any) -> Any:
+    """``tesla:``/``google:`` sections fed from .env stay off until a client id is set."""
+    if isinstance(v, dict) and not str(v.get("client_id") or "").strip():
+        return None
+    return v
 
 
 class LlmConfig(_Strict):
@@ -292,7 +359,8 @@ class Config(_Strict):
     default_target: str | None = None
     """Device or room used for target 'here' when nothing else decides it."""
     media_sources: dict[str, MediaSourceConfig] = Field(default_factory=dict)
-    tesla: TeslaConfig | None = None
+    tesla: Annotated[TeslaConfig | None, BeforeValidator(_off_when_unset)] = None
+    google: Annotated[GoogleConfig | None, BeforeValidator(_off_when_unset)] = None
     llm: LlmConfig | None = None
     allow_exec: bool = False
     notify_on_error: bool = True

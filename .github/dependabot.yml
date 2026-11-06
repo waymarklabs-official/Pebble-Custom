@@ -16,7 +16,7 @@ updates:
     directory: /
     schedule:
       interval: weekly
-  - package-ecosystem: docker-compose    # the pinned ntfy image in docker-compose.yml
+  - package-ecosystem: docker-compose    # the pinned ntfy and Tesla proxy images in docker-compose.yml
     directory: /
     schedule:
       interval: weekly

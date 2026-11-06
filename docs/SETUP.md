@@ -123,11 +123,8 @@ With Phone Key and walk-up unlock, a Model Y unlocks as you walk up and locks as
 away, so **unlocked ≈ you're at the car**. One button then means "open the trunk" at the car and
 "warm it up" anywhere else.
 
-1. Create a Fleet API app at developer.tesla.com with scopes `vehicle_device_data`,
-   `vehicle_cmds` and `vehicle_location` (for parking memory), and pair the virtual key.
-2. Run Tesla's [`tesla-http-proxy`](https://github.com/teslamotors/vehicle-command). A Model Y
-   needs signed commands. State reads stay plain REST and go to `read_url`.
-3. Fill in the `tesla:` section. The hub refreshes tokens and stores each rotated refresh token.
+Setup (keys, the signing proxy, connecting your account, pairing the key to the car) is in
+[INTEGRATIONS.md](INTEGRATIONS.md#tesla), along with every car voice command and Google Calendar.
 
 Cost and battery: reading state on a press costs one free online check plus one data call
 (about $0.002) only if the car is awake. A sleeping car is never woken just to read; it's treated

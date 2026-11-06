@@ -31,6 +31,13 @@ class VehicleState:
     lat: float | None = None
     lon: float | None = None
     climate_on: bool | None = None
+    battery: int | None = None
+    """State of charge, percent."""
+    range_mi: float | None = None
+    inside_c: float | None = None
+    charging: str | None = None
+    """Charging / Complete / Stopped / Disconnected / ..."""
+    sentry: bool | None = None
     fetched_at: float = 0.0
 
     @property
@@ -47,7 +54,9 @@ class VehicleState:
     def as_dict(self) -> dict[str, Any]:
         return {"online": self.online, "locked": self.locked, "user_present": self.user_present,
                 "shift_state": self.shift_state, "lat": self.lat, "lon": self.lon,
-                "climate_on": self.climate_on, "fetched_at": self.fetched_at, "summary": self.summary}
+                "climate_on": self.climate_on, "battery": self.battery, "range_mi": self.range_mi,
+                "inside_c": self.inside_c, "charging": self.charging, "sentry": self.sentry,
+                "fetched_at": self.fetched_at, "summary": self.summary}
 
 
 def parse_vehicle_data(data: dict[str, Any], now: float) -> VehicleState:
@@ -55,6 +64,7 @@ def parse_vehicle_data(data: dict[str, Any], now: float) -> VehicleState:
     ds = data.get("drive_state") or {}
     cs = data.get("climate_state") or {}
     loc = data.get("location_data") or {}
+    ch = data.get("charge_state") or {}
 
     def num(*vals: Any) -> float | None:
         for v in vals:
@@ -70,6 +80,11 @@ def parse_vehicle_data(data: dict[str, Any], now: float) -> VehicleState:
         lat=num(ds.get("latitude"), loc.get("latitude"), ds.get("active_route_latitude")),
         lon=num(ds.get("longitude"), loc.get("longitude"), ds.get("active_route_longitude")),
         climate_on=cs.get("is_climate_on") if isinstance(cs.get("is_climate_on"), bool) else None,
+        battery=int(b) if (b := num(ch.get("battery_level"), ch.get("usable_battery_level"))) is not None else None,
+        range_mi=num(ch.get("battery_range"), ch.get("est_battery_range")),
+        inside_c=num(cs.get("inside_temp")),
+        charging=ch.get("charging_state") if isinstance(ch.get("charging_state"), str) else None,
+        sentry=vs.get("sentry_mode") if isinstance(vs.get("sentry_mode"), bool) else None,
         fetched_at=now,
     )
 
@@ -95,7 +110,8 @@ class Vehicle:
                     if allow_stale and self._last_good is not None:
                         # Asleep cars don't move: the last known position is still right.
                         state = VehicleState(online=False, locked=True, lat=self._last_good.lat,
-                                             lon=self._last_good.lon, fetched_at=now)
+                                             lon=self._last_good.lon, battery=self._last_good.battery,
+                                             range_mi=self._last_good.range_mi, fetched_at=now)
                 else:
                     state = parse_vehicle_data(await self._client.vehicle_data(), now)
                     self._last_good = state

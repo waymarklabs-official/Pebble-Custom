@@ -80,3 +80,22 @@ services:
       start_interval: 3s                 # check quickly while starting, so ringhub isn't held up
     mem_limit: 128m
     logging: *logging
+
+  # Tesla's command-signing proxy (github.com/teslamotors/vehicle-command). A Model Y only accepts
+  # signed commands, and this signs them with data/tesla/private-key.pem. It's off until you start it:
+  #   bash deploy/pi/tesla-keys.sh && docker compose --profile tesla up -d
+  # No port is published: only ringhub reaches it, as https://tesla-proxy:4443.
+  tesla-proxy:
+    profiles: ["tesla"]
+    # Pinned by version and digest (Dependabot proposes updates).
+    image: tesla/vehicle-command:0.4.1@sha256:e8adac679bf5e72790c588e620bb4a7992a8f80d4c3bd98da6d1129f59daf482
+    command: ["-tls-key", "/config/tls-key.pem", "-cert", "/config/tls-cert.pem",
+              "-key-file", "/config/private-key.pem", "-host", "0.0.0.0", "-port", "4443"]
+    restart: unless-stopped
+    user: "1000:1000"
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - ./data/tesla:/config:ro
+    mem_limit: 64m
+    logging: *logging

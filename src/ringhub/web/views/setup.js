@@ -5,7 +5,13 @@ import { del, get, post, put } from '../lib/api.js';
 import { add, clock, confirmButton, emptyState, field, h, mount, relTime, slugify, toast, uniqueId } from '../lib/dom.js';
 
 export async function render(root, { params, go, refresh }) {
-  const [places, setup, ctx, events] = await Promise.all([get('/places'), get('/setup'), get('/context'), get('/events?limit=40')]);
+  const [places, setup, ctx, events, integ] = await Promise.all([get('/places'), get('/setup'), get('/context'),
+    get('/events?limit=40'), get('/integrations')]);
+  const connected = new URLSearchParams(location.hash.split('?')[1] || '').get('connected');
+  if (connected) {
+    toast(connected === 'tesla' ? 'Tesla connected' : 'Google Calendar connected');
+    history.replaceState(null, '', '#/setup');
+  }
 
   if (params[0] === 'place') {
     const existing = params[1] && params[1] !== 'new' ? places.find((p) => p.id === params[1]) : null;
@@ -27,6 +33,7 @@ export async function render(root, { params, go, refresh }) {
       h('p', { class: 'muted small' }, 'Modes and “when I get to…” reminders use these. Your phone tells the hub when you arrive and leave.'),
       placeList),
     phoneSetup(setup),
+    integrations(integ, refresh),
     timeline(ctx, places),
     activity(events),
     backup(refresh),
@@ -94,6 +101,118 @@ function phoneSetup(setup) {
     copyRow('Password', token, { secret: true }),
     h('p', { class: 'muted small' }, 'Mode HTTP, any username. Places with a latitude/longitude are sent to OwnTracks as regions automatically.'));
   return card;
+}
+
+// ---------------------------------------------------------------- integrations
+
+async function startConnect(provider) {
+  try {
+    const { url } = await post(`/integrations/${provider}/connect`);
+    location.href = url;   // the provider sends the browser back to /oauth/<provider>/callback
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+function step(n, title, done, ...body) {
+  return h('div', { class: `int-step${done ? ' done' : ''}` },
+    h('div', { class: 'int-step-head' }, h('span', { class: 'int-step-n', 'aria-hidden': 'true' }, done ? '✓' : String(n)),
+      h('h3', {}, title)),
+    h('div', { class: 'int-step-body' }, ...body));
+}
+
+function integrations(integ, refresh) {
+  const card = h('section', { class: 'card', id: 'integrations' }, h('h2', {}, 'Integrations'),
+    h('p', { class: 'muted small' }, 'Full instructions: docs/INTEGRATIONS.md in the repository.'));
+  add(card, teslaSection(integ.tesla, refresh), googleSection(integ.google, refresh));
+  return card;
+}
+
+function teslaSection(t, refresh) {
+  const box = h('div', { class: 'int' }, h('h3', { class: 'int-title' }, '🚗 Tesla'));
+  if (!t.enabled) {
+    add(box, h('p', { class: 'muted small' }, 'Off. Set TESLA_CLIENT_ID, TESLA_CLIENT_SECRET and TESLA_DOMAIN in .env, run deploy/pi/tesla-keys.sh, then start the proxy (docker compose --profile tesla up -d).'));
+    return box;
+  }
+  const out = h('p', { class: 'muted small', role: 'status' });
+  const run = (label, fn) => h('button', {
+    type: 'button', class: 'btn small ghost',
+    onClick: async (e) => {
+      e.target.disabled = true; out.textContent = '…';
+      try { out.textContent = await fn(); } catch (ex) { out.textContent = ex.message; } finally { e.target.disabled = false; }
+    },
+  }, label);
+
+  add(box,
+    step(1, 'Your public key', Boolean(t.public_key),
+      t.public_key
+        ? h('p', { class: 'muted small' }, 'This hub signs commands with data/tesla/private-key.pem. Host data/tesla/public-key.pem at:')
+        : h('p', { class: 'form-error' }, t.public_key_error || 'No key yet: run  bash deploy/pi/tesla-keys.sh  on the Pi.'),
+      t.public_key_url ? copyRow('URL', t.public_key_url) : h('p', { class: 'form-error' }, 'Set TESLA_DOMAIN in .env.')),
+    step(2, 'Connect your Tesla account', t.connected,
+      t.redirect_uri ? copyRow('Redirect URI (add it to your app at developer.tesla.com)', t.redirect_uri)
+        : h('p', { class: 'form-error' }, 'Set RINGHUB_PUBLIC_URL first.'),
+      t.has_secret ? null : h('p', { class: 'form-error' }, 'Set TESLA_CLIENT_SECRET in .env.'),
+      h('div', { class: 'inline-form wrap' },
+        h('button', { type: 'button', class: `btn small ${t.connected ? 'ghost' : 'primary'}`, onClick: () => startConnect('tesla') },
+          t.connected ? 'Reconnect' : 'Connect Tesla'),
+        t.connected ? confirmButton('Disconnect', 'Tap again', async () => {
+          try { await post('/integrations/tesla/disconnect'); toast('Tesla disconnected'); refresh(); } catch (e) { toast(e.message, 'error'); }
+        }, 'btn small ghost') : null)),
+  );
+  if (t.connected) {
+    const cars = h('div', { class: 'inline-form wrap' });
+    add(box, step(3, 'Pick the car', Boolean(t.vin),
+      t.vin ? h('p', { class: 'muted small' }, 'Using ', h('code', {}, t.vin), ` (region ${t.region}).`) : null,
+      run(t.vin ? 'Change car' : 'Show my cars', async () => {
+        const list = await get('/integrations/tesla/vehicles');
+        mount(cars, ...list.map((c) => h('button', {
+          type: 'button', class: 'btn small ghost',
+          onClick: async () => {
+            try { await post('/integrations/tesla/vehicle', { vin: c.vin }); toast(`Using ${c.name}`); refresh(); } catch (e) { toast(e.message, 'error'); }
+          },
+        }, `${c.name} · …${c.vin.slice(-6)}`)));
+        return list.length ? 'Tap the car to use:' : 'No cars on this account.';
+      }), cars));
+    add(box,
+      step(4, 'Register your domain with Tesla (once)', false,
+        h('p', { class: 'muted small' }, 'Tells Tesla your domain and key. Run it after the public key URL above loads in a browser.'),
+        run('Register', async () => {
+          const r = await post('/integrations/tesla/register');
+          return r.matches_local_key === false ? 'Registered, but the key differs from this hub’s!'
+            : `Registered ${r.domain} in region ${r.region}${r.matches_local_key ? ' — key matches this hub ✓' : ''}.`;
+        })),
+      step(5, 'Add the key to your car (once)', false,
+        h('p', { class: 'muted small' }, 'On your phone, with the Tesla app and the car nearby, open this link and approve. The car then lists your domain under Locks.'),
+        t.pairing_link ? h('div', { class: 'inline-form wrap' }, copyRow('Link', t.pairing_link),
+          h('a', { class: 'btn small primary', href: t.pairing_link, target: '_blank', rel: 'noopener' }, 'Open')) : null),
+      step(6, 'Check', false,
+        h('p', { class: 'muted small' }, 'Reads the car’s state without waking it. Commands need the proxy running: docker compose --profile tesla up -d.'),
+        run('Check the car', async () => (await post('/integrations/tesla/check')).summary)),
+      out);
+  } else {
+    add(box, out);
+  }
+  return box;
+}
+
+function googleSection(g, refresh) {
+  const box = h('div', { class: 'int' }, h('h3', { class: 'int-title' }, '📅 Google Calendar'));
+  if (!g.enabled) {
+    add(box, h('p', { class: 'muted small' }, 'Off. Create an OAuth client (type “Web application”) in Google Cloud, then set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in .env.'));
+    return box;
+  }
+  add(box,
+    g.redirect_uri ? copyRow('Redirect URI (add it to the OAuth client)', g.redirect_uri)
+      : h('p', { class: 'form-error' }, 'Set RINGHUB_PUBLIC_URL first.'),
+    g.connected
+      ? h('p', { class: 'muted small' }, 'Connected', g.account ? [' as ', h('strong', {}, g.account)] : '', ` · events go to “${g.calendar_id}”. Say “add dentist to my calendar Friday at 3” or “what’s on my calendar tomorrow”.`)
+      : h('p', { class: 'muted small' }, 'Not connected yet.'),
+    h('div', { class: 'inline-form wrap' },
+      h('button', { type: 'button', class: `btn small ${g.connected ? 'ghost' : 'primary'}`, onClick: () => startConnect('google') },
+        g.connected ? 'Reconnect' : 'Connect Google Calendar'),
+      g.connected ? confirmButton('Disconnect', 'Tap again', async () => {
+        try { await post('/integrations/google/disconnect'); toast('Google Calendar disconnected'); refresh(); } catch (e) { toast(e.message, 'error'); }
+      }, 'btn small ghost') : null));
+  return box;
 }
 
 function timeline(ctx, places) {
