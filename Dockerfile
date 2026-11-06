@@ -1,23 +1,41 @@
-# syntax=docker/dockerfile:1.7
 # Multi-arch (amd64 / arm64): the same image runs on a Raspberry Pi 4/5 and on a mini PC.
-# No system packages are needed by default; TV control over ADB is opt-in:
-#   docker build --build-arg WITH_ADB=1 .
-FROM python:3.12-slim-bookworm AS build
-# Patient downloads: a Pi on busy Wi-Fi (or sharing bandwidth with a stream) can be slow.
-ENV PIP_DEFAULT_TIMEOUT=120 PIP_RETRIES=10 PIP_DISABLE_PIP_VERSION_CHECK=1
+# CI builds, tests and publishes it (.github/workflows/ci.yml); a production machine only pulls it.
+#
+# Reproducible and verified:
+#   - the base image is pinned by digest (Dependabot proposes updates);
+#   - every Python package, and the build backend, is pinned by version and sha256 in
+#     requirements.txt / requirements-build.txt; pip refuses anything that doesn't match;
+#   - wheels only (--only-binary): nothing is compiled from source with unpinned build tools.
+#
+# No system packages are needed by default. TV control over ADB is opt-in (Debian's adb package,
+# from the pinned base image's apt sources):  docker build --build-arg WITH_ADB=1 .
+# Both stages use the same base, written out in full so Dependabot can update it.
+FROM python:3.12-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df AS build
+ENV PIP_DEFAULT_TIMEOUT=120 PIP_RETRIES=10 PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_CACHE_DIR=1
 WORKDIR /src
+COPY requirements.txt requirements-build.txt ./
+# Dependencies are resolved (not --no-deps), so a lock file missing any transitive package fails here.
+RUN pip install --require-hashes --only-binary=:all: -r requirements-build.txt \
+ && pip download --require-hashes --only-binary=:all: --dest /wheels -r requirements.txt \
+ && cp requirements.txt /wheels/
 COPY pyproject.toml README.md ./
 COPY src ./src
-RUN pip wheel --no-cache-dir --wheel-dir /wheels ".[llm]"
+RUN pip wheel --no-deps --no-build-isolation --no-index --wheel-dir /wheels .
 
-FROM python:3.12-slim-bookworm
+FROM python:3.12-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df
 ARG WITH_ADB=0
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_CACHE_DIR=1
 RUN if [ "$WITH_ADB" = "1" ]; then \
       apt-get update && apt-get install -y --no-install-recommends adb && rm -rf /var/lib/apt/lists/*; \
     fi \
- && useradd --create-home --uid 1000 ringhub
-COPY --from=build /wheels /wheels
-RUN pip install --no-cache-dir --no-index /wheels/* && rm -rf /wheels
+ && useradd --create-home --uid 1000 ringhub \
+ && mkdir -p /app \
+ && install -d -o ringhub -g ringhub /app/data
+# Installed straight from the build stage (bind mount), so the wheels never become an image layer.
+RUN --mount=type=bind,from=build,source=/wheels,target=/wheels \
+    pip install --no-index --find-links=/wheels --require-hashes --only-binary=:all: -r /wheels/requirements.txt \
+ && pip install --no-index --no-deps /wheels/ringhub-*.whl \
+ && pip check
 USER ringhub
 WORKDIR /app
 # /app/data: SQLite (notes, reminders, catalog), audio. /home/ringhub/.android: ADB key (WITH_ADB only).

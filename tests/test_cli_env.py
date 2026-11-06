@@ -19,8 +19,8 @@ def test_env_has_fresh_secrets_random_topic_and_separate_ports(capsys: pytest.Ca
     code, out, _ = run(capsys, "--host", "Pi.Tail1234.ts.net.", "--tz", "America/New_York")
     assert code == 0
     env = dict(line.split("=", 1) for line in out.splitlines() if line and not line.startswith("#"))
-    assert env["RINGHUB_PUBLIC_URL"] == "https://pi.tail1234.ts.net:8443"
-    assert env["NTFY_PUBLIC_URL"] == "https://pi.tail1234.ts.net:8444"  # must match the iPhone app exactly
+    assert env["RINGHUB_PUBLIC_URL"] == "https://pi.tail1234.ts.net:8445"
+    assert env["NTFY_PUBLIC_URL"] == "https://pi.tail1234.ts.net:8446"  # must match the iPhone app exactly
     assert re.fullmatch(r"ring-[a-z2-9]{12}", env["NTFY_TOPIC"])          # random: matches ACL 'ring-*'
     assert env["TZ"] == "America/New_York" and env["NTFY_TOKEN"] == ""
     assert env["RINGHUB_TAG"] == "main"  # follows the default branch's published image
@@ -60,7 +60,7 @@ def test_envfile_runs_without_any_dependencies_installed() -> None:
     r = subprocess.run([sys.executable, "-c", code], env={"PYTHONPATH": str(src)},
                        capture_output=True, text=True, timeout=30, check=False)
     assert r.returncode == 0, r.stderr
-    assert "NTFY_PUBLIC_URL=https://pi.tail1234.ts.net:8444" in r.stdout
+    assert "NTFY_PUBLIC_URL=https://pi.tail1234.ts.net:8446" in r.stdout
 
 
 async def test_min_priority_raises_every_push(make_config, ntfy) -> None:  # type: ignore[no-untyped-def]

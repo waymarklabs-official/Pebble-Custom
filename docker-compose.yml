@@ -7,9 +7,10 @@
 # HTTPS on their own ports, so nothing else on the machine (e.g. Tstream) is touched.
 # Full walkthrough: docs/PI.md
 #
+#   bash deploy/pi/preflight.sh             # read-only; prints the exact commands for this machine
 #   mkdir -p data ntfy/cache ntfy/lib       # BEFORE the first `up` (else Docker creates them as root)
-#   PYTHONPATH=src python3 -m ringhub.envfile --host <pi>.<tailnet>.ts.net --tz <Zone/City> > .env
-#   docker compose pull && docker compose up -d
+#   PYTHONPATH=src python3 -m ringhub.envfile --host <pi>.<tailnet>.ts.net --tag <tag> --tz <Area/City> > .env
+#   docker compose pull && docker compose up -d && sudo bash deploy/pi/serve.sh
 #
 # Developing ringhub itself? Build from this checkout instead:
 #   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
@@ -20,7 +21,8 @@ x-logging: &logging
 
 services:
   ringhub:
-    # RINGHUB_TAG in .env: "main" follows the default branch; "sha-<7 chars>" pins one tested build.
+    # RINGHUB_TAG in .env: "main" follows the default branch, "<branch-name>" (slashes as dashes)
+    # follows a branch, "sha-<7 chars>" pins one exact, tested build.
     image: ghcr.io/waymarklabs-official/pebble-custom:${RINGHUB_TAG:-main}
     restart: unless-stopped
     init: true
@@ -40,7 +42,8 @@ services:
     logging: *logging
 
   ntfy:
-    image: binwiederhier/ntfy:v2.37.2     # pinned; read release notes before bumping
+    # Pinned by version and digest (Dependabot proposes updates); read the release notes before bumping.
+    image: binwiederhier/ntfy:v2.37.2@sha256:1875ddcf815c8a3c981d6d78c67a93452d0abba79b1ab9520b1f5f5238902bd7
     command: ["serve"]
     restart: unless-stopped
     init: true

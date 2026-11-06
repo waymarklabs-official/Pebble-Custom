@@ -8,3 +8,9 @@ tests
 .ruff_cache
 config.yaml
 .env
+ntfy
+smoke
+e2e
+.github
+docs
+deploy

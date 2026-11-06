@@ -71,6 +71,7 @@ or CDN.
 
 ```bash
 pip install -e '.[llm]'            # Python 3.11+ (Docker users: see docs/PI.md)
+#   or exactly what production runs:  pip install --require-hashes -r requirements.txt && pip install --no-deps -e .
 cp config.example.yaml config.yaml && cp .env.example .env    # fill in secrets
 ringhub check && ringhub serve
 ```
@@ -99,5 +100,9 @@ minutes. The [design doc](docs/DESIGN.md) explains the model, and
   - Dashboard sessions are HttpOnly, SameSite=Strict, with a CSRF header and a strict CSP.
   - Transcripts are never templates, `exec` is off by default, and geofence input is debounced.
 - **Ops:** `ringhub check`, `/healthz`, an activity log, catalog export/import, Docker (non-root,
-  multi-arch), a hardened systemd unit, and CI running ruff, `mypy --strict` and pytest, then
-  publishing a smoke-tested amd64 + arm64 image to GHCR.
+  multi-arch), a hardened systemd unit, and read-only preflight checks for the Pi.
+- **Supply chain:** every Python package is pinned by version and sha256 (`requirements*.txt`),
+  the base images by digest and the GitHub Actions by commit. CI runs ruff, `mypy --strict` and
+  pytest against exactly those versions. It then runs the whole stack end to end on the arm64
+  image under emulation, and only then publishes amd64 + arm64 to GHCR. Published `sha-` tags are
+  never overwritten.
