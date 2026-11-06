@@ -14,6 +14,11 @@ for port in "$RING_PORT" "$NTFY_PORT"; do
   if printf ' %s ' "$USED" | grep -q " $port "; then
     echo "tailnet port $port is already served by something else; choose another (nothing changed)" >&2; exit 1
   fi
+  # A program listening on this port (e.g. another app on 0.0.0.0:$port) would be hidden from the
+  # tailnet once Serve claims the port. Refuse instead of breaking it.
+  if ss -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]${port}\$"; then
+    echo "port $port is already used by a program on this machine; choose another (nothing changed)" >&2; exit 1
+  fi
 done
 echo "Before:"; tailscale serve status || true
 tailscale serve --bg --yes --https="$RING_PORT" http://127.0.0.1:8787

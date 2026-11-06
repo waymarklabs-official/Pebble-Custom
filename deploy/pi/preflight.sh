@@ -41,6 +41,11 @@ print(" ".join(sorted((d.get("TCP") or {}).keys(), key=int)))' 2>/dev/null)"
 fi
 
 echo "Local ports (must be free; both services bind 127.0.0.1)"
+for port in "$RING_PORT" "$NTFY_PORT"; do
+  if ss -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]${port}\$"; then
+    fail "port $port is used by a program on this machine ($(ss -ltnp 2>/dev/null | grep -E "[:.]${port} " | head -1 | awk '{print $NF}')); pick another"
+  fi
+done
 for port in 8787 2586 "$RING_PORT" "$NTFY_PORT"; do
   if ss -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]${port}\$"; then warn "something already listens on :$port ($(ss -ltnp 2>/dev/null | grep -E "[:.]${port} " | head -1 | awk '{print $NF}'))"
   else ok ":$port free"; fi
