@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Read-only checks before installing or upgrading ringhub on a machine that already runs other
-# apps (e.g. Tstream). Changes NOTHING, on this machine or in Tailscale.
+# apps (e.g. Tstream). Changes NOTHING, on this machine, in git or in Tailscale.
 #
 #   bash deploy/pi/preflight.sh               ports from .env if it exists, otherwise 8445 and 8446
 #   bash deploy/pi/preflight.sh 8447 8448     try two other ports before .env exists
@@ -14,40 +14,61 @@ pit()  { PYTHONPATH=src python3 -m ringhub.pitools "$@"; }
 WARN=0; FAIL=0
 RING_TARGET=http://127.0.0.1:8787
 NTFY_TARGET=http://127.0.0.1:2586
-g() { git -c safe.directory="$PWD" "$@"; }   # also works when run with sudo in a user's checkout
+HERE="$(pwd -P)"   # git compares safe.directory with the physical path
+g() { git -c safe.directory="$HERE" "$@"; }   # works when run with sudo in a user's checkout
 
-REV="$(g rev-parse --short=7 HEAD 2>/dev/null || echo unknown)"
-BRANCH="$(g rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-echo "ringhub preflight $REV${BRANCH:+ ($BRANCH)}"
+# --- This checkout ------------------------------------------------------------------------------
+# An old preflight checks old things (one looked at ports 8443/8444), so say which one this is and
+# compare it with GitHub first. Nothing here writes to .git: ls-remote and rev-parse only read, and
+# status runs with --no-optional-locks (under sudo, a plain `git status` makes .git/index root's).
+HEAD_SHA="$(g rev-parse HEAD 2>/dev/null || true)"
+REV="${HEAD_SHA:0:7}"
+BRANCH=""
+[ -n "$HEAD_SHA" ] && BRANCH="$(g symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+echo "ringhub preflight ${REV:-(not a git checkout)}${BRANCH:+ ($BRANCH)}"
 echo "This checkout"
-# Old scripts check old things (an older preflight looked at ports 8443/8444). Compare with GitHub
-# first; `git ls-remote` only reads, it changes nothing here.
-if [ -z "$BRANCH" ] || [ "$BRANCH" = HEAD ]; then
-  ok "pinned to commit $REV (not on a branch, so not compared with GitHub)"
+if [ -z "$HEAD_SHA" ]; then
+  warn "this folder isn't a git checkout git can read, so it can't tell whether it's current. Run it in your clone (~/ringhub) after git pull"
+elif [ -z "$BRANCH" ]; then
+  warn "not on a branch (detached at $REV), so it can't tell whether it's current. To follow a branch: git checkout <branch> && git pull"
 else
-  HEAD_SHA="$(g rev-parse HEAD 2>/dev/null)"
-  REMOTE_SHA="$(GIT_TERMINAL_PROMPT=0 timeout 20 git -c safe.directory="$PWD" ls-remote origin "refs/heads/$BRANCH" 2>/dev/null | cut -f1)"
-  if [ -z "$REMOTE_SHA" ]; then
-    warn "couldn't ask GitHub for the newest $BRANCH (offline, or not pushed); checking $REV as it is"
+  UPSTREAM="$(g rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+  REMOTE_NAME="origin"; REMOTE_BRANCH="$BRANCH"
+  if [ -n "$UPSTREAM" ]; then REMOTE_NAME="${UPSTREAM%%/*}"; REMOTE_BRANCH="${UPSTREAM#*/}"; fi
+  REMOTE_SHA="$(GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -o BatchMode=yes -o ConnectTimeout=10' \
+    timeout 20 git -c safe.directory="$HERE" ls-remote --exit-code "$REMOTE_NAME" "refs/heads/$REMOTE_BRANCH" \
+    </dev/null 2>/dev/null | cut -f1; exit "${PIPESTATUS[0]}")"
+  LS_STATUS=$?
+  if [ "$LS_STATUS" = 2 ]; then
+    fail "GitHub no longer has the branch $REMOTE_BRANCH (merged?). Switch to main: git checkout main && git pull"
+  elif [ -z "$REMOTE_SHA" ]; then
+    warn "couldn't ask GitHub for the newest $REMOTE_BRANCH (offline?); checking $REV as it is"
   elif [ "$REMOTE_SHA" = "$HEAD_SHA" ]; then
-    ok "up to date with GitHub"
+    ok "up to date with GitHub ($REV)"
   elif g merge-base --is-ancestor "$REMOTE_SHA" HEAD 2>/dev/null; then
     ok "ahead of GitHub (local commits on top of ${REMOTE_SHA:0:7})"
   else
     fail "out of date: GitHub has ${REMOTE_SHA:0:7}, this is $REV. Run: git pull   then run this check again"
+    OWNER="$(stat -c %U . 2>/dev/null || true)"
+    if [ -n "$OWNER" ] && find .git ! -user "$OWNER" -print -quit 2>/dev/null | grep -q .; then
+      info "some files in .git belong to another user (from a git command run with sudo), which makes git pull fail."
+      info "Fix: sudo chown -R $OWNER: .git   then git pull (without sudo)"
+    fi
   fi
 fi
-# Your settings live in .env and config.yaml, which git ignores. A changed tracked file (say, a
-# docker-compose.yml still naming an old self-built image) means this isn't the tested setup, and it
-# can also make `git pull` refuse to update. --no-optional-locks: status must not rewrite .git/index
-# (under sudo it would become root-owned and break your next git pull).
-CHANGED="$(g --no-optional-locks status --porcelain --untracked-files=no 2>/dev/null | cut -c4-)"
-if [ -n "$CHANGED" ]; then
-  fail "files changed on this machine, so this isn't the tested setup (settings belong in .env and config.yaml):"
-  while read -r f; do info "$f"; done <<<"$CHANGED"
-  info "see the changes: git diff      put the files back: git checkout HEAD -- ${CHANGED//$'\n'/ }"
+if [ -n "$HEAD_SHA" ]; then
+  # Your settings live in .env and config.yaml, which git ignores. A changed tracked file (say, a
+  # docker-compose.yml still naming an old self-built image) isn't the tested setup, and it can
+  # make git pull refuse to update.
+  CHANGED="$(g --no-optional-locks status --porcelain --untracked-files=no 2>/dev/null | cut -c4-)"
+  if [ -n "$CHANGED" ]; then
+    fail "files changed on this machine, so this isn't the tested setup (settings belong in .env and config.yaml):"
+    while read -r f; do info "$f"; done <<<"$CHANGED"
+    info "see the changes: git diff      put the files back: git checkout HEAD -- ${CHANGED//$'\n'/ }"
+  fi
 fi
 
+# --- Machine ------------------------------------------------------------------------------------
 echo "Machine"
 ARCH=""
 case "$(uname -m)" in
@@ -81,14 +102,16 @@ fi
 read -r RING_PORT NTFY_PORT PORTS_FROM <<<"$PORTS"
 ok "ports: ringhub $RING_PORT, ntfy $NTFY_PORT (from $PORTS_FROM)"
 
+# --- Docker -------------------------------------------------------------------------------------
 echo "Docker"
-DOCKER=""
+DOCKER=""; D="docker"
 if ! command -v docker >/dev/null; then
   fail "docker not installed (curl -fsSL https://get.docker.com | sh)"
 else
   ok "$(docker --version)"
-  if docker info >/dev/null 2>&1; then DOCKER="docker"; ok "daemon reachable"
-  elif sudo -n docker info >/dev/null 2>&1; then DOCKER="sudo docker"; ok "daemon reachable with sudo: put sudo in front of every docker command"
+  # DOCKER is what this script runs (never prompts: sudo -n); D is what it tells you to type.
+  if docker info >/dev/null 2>&1; then DOCKER="docker"; D="docker"; ok "daemon reachable"
+  elif sudo -n docker info >/dev/null 2>&1; then DOCKER="sudo -n docker"; D="sudo docker"; ok "daemon reachable with sudo: put sudo in front of every docker command"
   else warn "couldn't reach the Docker daemon as $(id -un). Use sudo for docker commands, or: sudo usermod -aG docker $(id -un) and log in again"
   fi
   if [ -n "$DOCKER" ]; then
@@ -102,6 +125,7 @@ else
   else fail "docker compose plugin missing (it comes with get.docker.com)"; fi
 fi
 
+# --- Registry -----------------------------------------------------------------------------------
 echo "Registry (this machine downloads tested images; it never builds)"
 for url in https://ghcr.io/v2/ https://pkg-containers.githubusercontent.com/ \
            https://registry-1.docker.io/v2/ https://auth.docker.io/token https://production.cloudflare.docker.com/; do
@@ -111,18 +135,19 @@ for url in https://ghcr.io/v2/ https://pkg-containers.githubusercontent.com/ \
     *) fail "cannot reach ${url#https://} (HTTP '${code:-none}'): this network blocks image downloads";;
   esac
 done
-BRANCH_TAG=""
-[ -n "$BRANCH" ] && [ "$BRANCH" != HEAD ] && BRANCH_TAG="$(pit branch-tag "$BRANCH" 2>/dev/null)"
-TAG=""
+# The image tag that matches this checkout: its branch, or its exact commit when not on a branch.
+SUGGESTED_TAG="main"
+if [ -n "$BRANCH" ]; then SUGGESTED_TAG="$(pit branch-tag "$BRANCH" 2>/dev/null || echo main)"
+elif [ -n "$REV" ]; then SUGGESTED_TAG="sha-$REV"; fi
 if [ -f .env ]; then
   TAG="$(pit env-get --env .env RINGHUB_TAG)"
   if [ -z "$TAG" ]; then
     fail ".env has no RINGHUB_TAG, so compose would look for the ':main' image. Add this line to .env:"
-    info "RINGHUB_TAG=${BRANCH_TAG:-main}"
-    TAG="${BRANCH_TAG:-main}"
+    info "RINGHUB_TAG=$SUGGESTED_TAG"
+    TAG="$SUGGESTED_TAG"
   fi
 else
-  TAG="${BRANCH_TAG:-main}"
+  TAG="$SUGGESTED_TAG"
 fi
 if [ -z "$ARCH" ]; then
   warn "skipping the image check (architecture unknown)"
@@ -137,6 +162,7 @@ else
   done <<<"$REFS"
 fi
 
+# --- Tailscale ----------------------------------------------------------------------------------
 echo "Tailscale"
 HOST=""
 if ! command -v tailscale >/dev/null; then fail "tailscale not installed"; else
@@ -146,30 +172,42 @@ if ! command -v tailscale >/dev/null; then fail "tailscale not installed"; else
   if STATUS="$(sudo -n tailscale serve status --json 2>/dev/null)" || STATUS="$(tailscale serve status --json 2>/dev/null)"; then
     ok "current tailscale serve mappings (left exactly as they are):"
     printf '%s' "$STATUS" | pit serve-show | while read -r line; do info "$line"; done
-    for pair in "$RING_PORT ringhub $RING_TARGET" "$NTFY_PORT ntfy $NTFY_TARGET"; do
-      read -r port name target <<<"$pair"
-      case "$(printf '%s' "$STATUS" | pit serve-state "$port" "$target")" in
+    LISTEN="$(ss -ltn 2>/dev/null)"
+    for item in "$RING_PORT ringhub $RING_TARGET RINGHUB_PUBLIC_URL" "$NTFY_PORT ntfy $NTFY_TARGET NTFY_PUBLIC_URL"; do
+      read -r port name target key <<<"$item"
+      state="$(printf '%s' "$STATUS" | pit serve-state "$port" "$target")"
+      # A program listening on a free port would be hidden from the tailnet once Serve claims it
+      # (loopback-only sockets can't be reached from the tailnet, so they don't count).
+      if [ "$state" = free ] && who="$(printf '%s' "$LISTEN" | pit listeners "$port")"; then state=listening; fi
+      case "$state" in
         free) ok "tailnet port $port is free for $name";;
         ours) ok "tailnet port $port already publishes $name (from an earlier install; serve.sh keeps it)";;
         ours-public) fail "tailnet port $port publishes $name to the PUBLIC internet (Funnel). Remove it with: sudo bash deploy/pi/serve.sh --off";;
-        *) if [ "$PORTS_FROM" = ".env" ]; then
-             fail "tailnet port $port (from your .env) is used by something else. Pick two free ports, then regenerate .env (docs/PI.md step 2)"
-           else
-             fail "tailnet port $port is used by something else. Try others: bash deploy/pi/preflight.sh <ringhub port> <ntfy port>"
-           fi;;
+        *)
+          if [ "$state" = listening ]; then why="a program on this machine listens on port $port ($who); publishing $name there would hide it"
+          else why="tailnet port $port is already published by something else (see the list above)"; fi
+          if [ "$PORTS_FROM" != ".env" ]; then
+            fail "$why. Try others: bash deploy/pi/preflight.sh <ringhub port> <ntfy port>"
+          else
+            elsewhere="$(printf '%s' "$STATUS" | pit serve-ports "$target")"
+            case "$name" in
+              ntfy) also="It must match the server URL in the iPhone ntfy app exactly, so re-add the server there if it changes.";;
+              *) also="If it changes, update the ring app's webhook URLs and your Shortcuts too.";;
+            esac
+            if [ -n "$elsewhere" ]; then
+              fail "$why. $name is already published on ${elsewhere%% *}: in .env set $key=https://${HOST:-<this machine>}:${elsewhere%% *}, then: $D compose up -d. $also"
+            else
+              fail "$why. Change only $key in .env to a free port and run this again; don't regenerate .env, that would replace your secrets. $also"
+            fi
+          fi;;
       esac
-      # A program already listening on a free port would be hidden from the tailnet once Serve
-      # claims it.
-      if [ "$(printf '%s' "$STATUS" | pit serve-state "$port" "$target")" = free ] \
-         && ss -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]${port}\$"; then
-        fail "a program on this machine listens on port $port; publishing $name there would hide it. Pick another"
-      fi
     done
   else
     warn "couldn't read tailscale serve status; run this again with sudo to check the tailnet ports"
   fi
 fi
 
+# --- Local ports --------------------------------------------------------------------------------
 echo "Local ports (both containers listen on 127.0.0.1 only)"
 for port in 8787 2586; do
   if ss -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]${port}\$"; then
@@ -180,7 +218,6 @@ done
 echo
 if [ "$FAIL" = 1 ]; then echo "Fix the ✗ items first. Nothing was changed."; exit 1; fi
 [ "$WARN" = 1 ] && echo "The ! items are worth a look but don't block anything."
-D="${DOCKER:-docker}"
 if [ -f .env ]; then
   echo "Ready to upgrade (from ~/ringhub):"
   echo "  $D compose pull && $D compose up -d"

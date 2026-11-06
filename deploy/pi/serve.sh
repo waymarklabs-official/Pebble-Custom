@@ -22,13 +22,13 @@ PORTS="$(pit ports --env .env)"
 read -r RING_PORT NTFY_PORT _ <<<"$PORTS"
 STATUS="$(tailscale serve status --json)"
 state() { printf '%s' "$STATUS" | pit serve-state "$1" "$2"; }
-PLAN=("$RING_PORT ringhub http://127.0.0.1:8787" "$NTFY_PORT ntfy http://127.0.0.1:2586")
+PLAN=("$RING_PORT ringhub http://127.0.0.1:8787 RINGHUB_PUBLIC_URL" "$NTFY_PORT ntfy http://127.0.0.1:2586 NTFY_PUBLIC_URL")
 
 echo "Before:"; tailscale serve status || true; echo
 
 if [ "$MODE" = off ]; then
   for item in "${PLAN[@]}"; do
-    read -r port name target <<<"$item"
+    read -r port name target _ <<<"$item"
     case "$(state "$port" "$target")" in
       ours|ours-public) tailscale serve --https="$port" off; echo "removed :$port ($name)";;
       free) echo ":$port is not published; nothing to remove";;
@@ -39,11 +39,13 @@ else
   # Check both ports before changing anything, so a refusal never leaves a half-published setup.
   TODO=()
   for item in "${PLAN[@]}"; do
-    read -r port name target <<<"$item"
+    read -r port name target key <<<"$item"
     case "$(state "$port" "$target")" in
       free)
-        if ss -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]${port}\$"; then
-          echo "port $port is used by a program on this machine; publishing $name there would hide it. Nothing changed." >&2
+        # Loopback-only listeners don't count: the tailnet can't reach them, so nothing is hidden.
+        if who="$(ss -ltn 2>/dev/null | pit listeners "$port")"; then
+          echo "port $port is used by a program on this machine ($who); publishing $name there would hide it." >&2
+          echo "Change only $key in .env to a free port (deploy/pi/preflight.sh checks it). Nothing changed." >&2
           exit 1
         fi
         TODO+=("$item");;
@@ -52,14 +54,21 @@ else
         echo ":$port publishes $name to the PUBLIC internet (Funnel). Run 'sudo bash deploy/pi/serve.sh --off' first. Nothing changed." >&2
         exit 1;;
       *)
-        echo "tailnet port $port (from .env) is used by something else; see 'Before' above." >&2
-        echo "Pick two free ports with deploy/pi/preflight.sh, then regenerate .env. Nothing changed." >&2
+        echo "tailnet port $port ($key in .env) is used by something else; see 'Before' above." >&2
+        echo "Change only $key in .env to a free port (deploy/pi/preflight.sh checks it, and says where $name already is)." >&2
+        echo "Don't regenerate .env: that would replace your secrets. Nothing changed." >&2
         exit 1;;
     esac
   done
+  ADDED=()
   for item in ${TODO[@]+"${TODO[@]}"}; do
-    read -r port name target <<<"$item"
-    tailscale serve --bg --yes --https="$port" "$target"
+    read -r port name target _ <<<"$item"
+    if ! tailscale serve --bg --yes --https="$port" "$target"; then
+      echo "publishing $name on :$port failed; undoing what this run added" >&2
+      for port in ${ADDED[@]+"${ADDED[@]}"}; do tailscale serve --https="$port" off || true; done
+      exit 1
+    fi
+    ADDED+=("$port")
   done
 fi
 

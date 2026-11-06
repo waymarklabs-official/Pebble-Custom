@@ -27,6 +27,7 @@ from .envfile import DEFAULT_NTFY_PORT, DEFAULT_RING_PORT
 RING_TARGET = "http://127.0.0.1:8787"
 NTFY_TARGET = "http://127.0.0.1:2586"
 TARGET_NAMES = {RING_TARGET: "ringhub", NTFY_TARGET: "ntfy"}
+FUNNEL_PORTS = frozenset({443, 8443, 10000})
 
 _ENV_KEY = re.compile(r"^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$")
 _COMPOSE_VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::?-([^}]*))?\}")
@@ -235,6 +236,39 @@ def describe_mappings(mappings: Mapping[int, ServeMapping]) -> list[str]:
     return lines
 
 
+def ports_serving(mappings: Mapping[int, ServeMapping], target: str) -> list[int]:
+    """Tailnet-only ports that already publish exactly `target` (e.g. where ntfy really is)."""
+    want = normalize_target(target)
+    # Funnel-capable ports (443, 8443, 10000) last: other apps are likeliest to want them back.
+    return sorted((p for p, m in mappings.items() if m.single_proxy == want and not m.funnel),
+                  key=lambda p: (p in FUNNEL_PORTS, p))
+
+
+# --- local listeners --------------------------------------------------------------------------
+
+
+def listeners(ss_output: str, port: int) -> list[str]:
+    """Addresses from `ss -ltn` listening on `port` that Tailscale Serve would hide.
+
+    Loopback-only sockets (127.0.0.0/8, ::1) can't be reached from the tailnet, so they don't
+    conflict; wildcard (0.0.0.0, ::, *), LAN and Tailscale-address binds do.
+    """
+    found = []
+    for line in ss_output.splitlines():
+        cols = line.split()
+        if len(cols) < 5 or cols[0] != "LISTEN":
+            continue
+        local = cols[3]
+        host, _, port_s = local.rpartition(":")
+        if port_s != str(port):
+            continue
+        host = host.strip("[]").split("%", 1)[0]
+        if host.startswith("127.") or host in ("::1", "localhost"):
+            continue
+        found.append(local)
+    return found
+
+
 # --- images -----------------------------------------------------------------------------------
 
 
@@ -392,6 +426,12 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("serve-show", help="list tailscale serve mappings (reads serve status JSON on stdin)")
 
+    c = sub.add_parser("serve-ports", help="tailnet-only ports already publishing a target (serve JSON on stdin)")
+    c.add_argument("target")
+
+    c = sub.add_parser("listeners", help="non-loopback listeners on a port (reads `ss -ltn` on stdin); exit 1 if none")
+    c.add_argument("port", type=int)
+
     c = sub.add_parser("compose-images", help="image references in docker-compose.yml, one per line")
     c.add_argument("--compose", type=Path, default=Path("docker-compose.yml"))
     c.add_argument("--env", type=Path, default=Path(".env"))
@@ -413,6 +453,12 @@ def main(argv: list[str] | None = None) -> int:
             print((read_env(args.env) or {}).get(args.key, ""))
         elif args.cmd == "serve-state":
             print(serve_state(_read_status(sys.stdin), args.port, args.target))
+        elif args.cmd == "serve-ports":
+            print(" ".join(map(str, ports_serving(_read_status(sys.stdin), args.target))))
+        elif args.cmd == "listeners":
+            found = listeners(sys.stdin.read(), args.port)
+            print(" ".join(found))
+            return 0 if found else 1
         elif args.cmd == "serve-show":
             print("\n".join(describe_mappings(_read_status(sys.stdin))) or "(none)")
         elif args.cmd == "compose-images":

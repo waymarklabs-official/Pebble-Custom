@@ -182,6 +182,45 @@ def test_cli_serve_state_reads_stdin(monkeypatch: pytest.MonkeyPatch, capsys: py
     assert pitools.main(["serve-show"]) == 2
 
 
+SS = """State  Recv-Q Send-Q Local Address:Port  Peer Address:PortProcess
+LISTEN 0      4096       127.0.0.1:8787       0.0.0.0:*
+LISTEN 0      4096           [::1]:8446          [::]:*
+LISTEN 0      4096   127.0.0.53%lo:8445       0.0.0.0:*
+LISTEN 0      4096               *:8444             *:*
+LISTEN 0      4096            [::]:9000          [::]:*
+LISTEN 0      4096   100.75.135.17:9001       0.0.0.0:*
+LISTEN 0      4096   [fe80::1%eth0]:9002        [::]:*
+"""
+
+
+@pytest.mark.parametrize(("port", "expect"), [
+    (8787, []), (8446, []), (8445, []),                          # loopback only: Serve hides nothing
+    (8444, ["*:8444"]), (9000, ["[::]:9000"]), (9001, ["100.75.135.17:9001"]), (9002, ["[fe80::1%eth0]:9002"]),
+    (1234, []),
+])
+def test_listeners_ignore_loopback_only_sockets(port: int, expect: list[str]) -> None:
+    assert pitools.listeners(SS, port) == expect
+
+
+def test_ports_serving_finds_where_a_target_really_is() -> None:
+    m = parse_serve_status(PI_STATUS)
+    assert pitools.ports_serving(m, RING_TARGET) == [8445, 443]       # Funnel-capable 443 last
+    assert pitools.ports_serving(m, NTFY_TARGET) == [8446]
+    status = json.loads(json.dumps(PI_STATUS))
+    status["AllowFunnel"][f"{HOST}:8446"] = True
+    assert pitools.ports_serving(parse_serve_status(status), NTFY_TARGET) == []   # public: never suggested
+
+
+def test_cli_listeners_and_serve_ports(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setattr(sys, "stdin", io.StringIO(SS))
+    assert pitools.main(["listeners", "8444"]) == 0 and capsys.readouterr().out == "*:8444\n"
+    monkeypatch.setattr(sys, "stdin", io.StringIO(SS))
+    assert pitools.main(["listeners", "8787"]) == 1
+    capsys.readouterr()
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(PI_STATUS)))
+    assert pitools.main(["serve-ports", NTFY_TARGET]) == 0 and capsys.readouterr().out == "8446\n"
+
+
 # --- images -----------------------------------------------------------------------------------
 
 

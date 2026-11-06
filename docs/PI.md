@@ -165,10 +165,23 @@ From `~/ringhub`:
    git pull
    bash deploy/pi/preflight.sh
    ```
-   It reads your ports from `.env`. Mappings you already published show as ✓ "already publishes
-   ringhub", and Tstream's show as left alone.
-2. **Fix what it flags.** If it says `.env` has no `RINGHUB_TAG`, add the line it prints. Also add
-   this line if it's missing:
+   `git pull` must end without an error. The preflight's first line names the commit it runs, and
+   "This checkout" must say ✓ up to date with GitHub. If it doesn't, nothing below it is
+   trustworthy yet: an older preflight checks old things (one looked at ports 8443/8444). It reads
+   your ports from `.env`. Mappings you already published show as ✓ "already publishes ringhub",
+   and Tstream's are left alone.
+2. **Fix what it flags.** Each ✗ says exactly what to change. The usual ones on an older install:
+   - **Files changed on this machine** (for example a `docker-compose.yml` that still names
+     `ringhub:latest`, the old self-built image). Settings belong in `.env` and `config.yaml`, so
+     put the files back with the `git checkout HEAD -- …` command it prints, then `git pull`.
+   - **`.env` has no `RINGHUB_TAG`.** Add the line it prints.
+   - **A port in `.env` that something else uses** (for example `NTFY_PUBLIC_URL` still on the old
+     default `:8444`). It tells you where ntfy or ringhub is already published. Change only that
+     URL in `.env`, then `docker compose up -d`. Never regenerate `.env`: that would replace your
+     secrets. If `NTFY_PUBLIC_URL` changed, remove the server in the iPhone ntfy app and add it
+     again with the new URL.
+
+   Also add this line to `.env` if it's missing:
    ```
    NTFY_MIN_PRIORITY=4
    ```
@@ -224,6 +237,8 @@ in the ntfy app remove and re-add the server.
 | The first request after setup takes a minute | Tailscale is issuing the HTTPS certificate. This happens once. |
 | `ntfy` won't start: permission denied | `data/` or `ntfy/` was created by Docker as root: `sudo chown -R 1000:1000 data ntfy`. |
 | `no matching manifest for linux/arm/v7` | The OS is 32-bit, even if `uname -m` says `aarch64`: `dpkg --print-architecture` must say `arm64`. Reinstall with Raspberry Pi OS (64-bit). |
+| `ringhub:latest: access denied` in the preflight | `docker-compose.yml` was changed on this machine and still names the old self-built image. `git checkout HEAD -- docker-compose.yml`, then `git pull`. |
+| `git pull` fails with "Permission denied" | A git command was once run with `sudo`, so some files in `.git` belong to root: `sudo chown -R "$(id -un):" .git`, then `git pull` without sudo. |
 | `manifest unknown` pulling the image | No image exists for that `RINGHUB_TAG`. `preflight.sh` says which tag it checked; use one from a green run in the repo's **Actions** tab. |
 | `denied` pulling the image | The package was made private on GitHub (it's public by default for this repo). Org → **Packages** → **pebble-custom** → **Package settings** → **Change visibility** → **Public**. |
 | Pull times out | Run `bash deploy/pi/preflight.sh`: its Registry section shows which download host this network blocks. |
