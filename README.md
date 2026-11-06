@@ -75,7 +75,11 @@ cp config.example.yaml config.yaml && cp .env.example .env    # fill in secrets
 ringhub check && ringhub serve
 ```
 
-Then follow [docs/SETUP.md](docs/SETUP.md): point the Index app's webhooks at the hub and add
+**On a Raspberry Pi next to other apps (recommended):** follow [docs/PI.md](docs/PI.md). It runs
+ringhub plus its own private ntfy server in Docker, published on your tailnet without touching
+anything else on the machine.
+
+Otherwise follow [docs/SETUP.md](docs/SETUP.md): point the Index app's webhooks at the hub and add
 two or three Shortcuts automations (arrive/leave home, car Bluetooth). It takes about 30
 minutes. The [design doc](docs/DESIGN.md) explains the model, and
 [docs/RECIPES.md](docs/RECIPES.md) has ideas worth copying.

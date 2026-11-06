@@ -6,7 +6,7 @@
 #
 # Any value can reference an environment variable: ${NAME} or ${NAME:-fallback}.
 
-timezone: America/Chicago            # reminders and "tomorrow at 9" use this
+timezone: ${TZ:-UTC}                 # reminders and "tomorrow at 9" use this (set TZ in .env)
 
 server:
   port: 8787

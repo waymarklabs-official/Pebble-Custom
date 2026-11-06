@@ -11,20 +11,23 @@ reminds you by time and place, and changes what its button does as you move thro
 
 ## 1. Run the hub
 
+> **Raspberry Pi already running other apps on Tailscale?** Use [PI.md](PI.md) instead of steps 1–2:
+> it sets up ringhub plus a private ntfy server and publishes both without touching your other apps.
+
 Any small always-on Linux box works: a Pi 4/5, a thin client, or a container on a home server.
+**With Docker**, follow [PI.md](PI.md) on any machine: it is not Pi-specific. **Without Docker:**
 
 ```bash
+pip install -e '.[llm]'                                          # Python 3.11+
+ringhub env --host <machine>.<tailnet>.ts.net --tz America/New_York > .env
+echo "NTFY_URL=https://ntfy.sh" >> .env                          # or your own ntfy server
 cp config.example.yaml config.yaml
-cp .env.example .env
-for v in RINGHUB_SECRET RINGHUB_ADMIN_TOKEN RINGHUB_CONTEXT_TOKEN; do
-  echo "$v=$(docker run --rm ringhub:latest secret 2>/dev/null || ringhub secret)" >> .env
-done
-$EDITOR .env      # NTFY_TOPIC, RINGHUB_PUBLIC_URL
-docker compose up -d --build        # or: pip install -e '.[llm]' && ringhub serve
+set -a; . ./.env; set +a
+ringhub check && ringhub serve
 ```
 
-`ringhub check` prints what's on and what's missing. Open `http://<hub>:8787/` and sign in
-with `RINGHUB_ADMIN_TOKEN`. The **Now** page shows the active mode and what each gesture does.
+`ringhub check` prints what's on and what's missing. Open the dashboard and sign in with
+`RINGHUB_ADMIN_TOKEN`. The **Now** page shows the active mode and what each gesture does.
 
 Install the **ntfy** app on your iPhone and subscribe to `NTFY_TOPIC`. This is how the ring
 talks back. The Pebble watch mirrors these notifications automatically. Allow Time Sensitive
