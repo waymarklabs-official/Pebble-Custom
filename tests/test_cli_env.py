@@ -23,6 +23,7 @@ def test_env_has_fresh_secrets_random_topic_and_separate_ports(capsys: pytest.Ca
     assert env["NTFY_PUBLIC_URL"] == "https://pi.tail1234.ts.net:8444"  # must match the iPhone app exactly
     assert re.fullmatch(r"ring-[a-z2-9]{12}", env["NTFY_TOPIC"])          # random: matches ACL 'ring-*'
     assert env["TZ"] == "America/New_York" and env["NTFY_TOKEN"] == ""
+    assert env["RINGHUB_TAG"] == "main"  # follows the default branch's published image
     secrets = [env["RINGHUB_SECRET"], env["RINGHUB_ADMIN_TOKEN"], env["RINGHUB_CONTEXT_TOKEN"]]
     assert len(set(secrets)) == 3 and all(len(s) >= 40 for s in secrets)
     _, again, _ = run(capsys, "--host", "pi.tail1234.ts.net")
@@ -39,6 +40,7 @@ def test_env_port_443_omits_the_port(capsys: pytest.CaptureFixture[str]) -> None
     ("--host", "pi"),
     ("--host", "100.101.102.103"),
     ("--host", "pi.tail1234.ts.net", "--ring-port", "8443", "--ntfy-port", "8443"),
+    ("--host", "pi.tail1234.ts.net", "--tag", "main; rm -rf /"),
 ])
 def test_env_rejects_bad_input(capsys: pytest.CaptureFixture[str], args: tuple[str, ...]) -> None:
     code, out, err = run(capsys, *args)
@@ -73,3 +75,8 @@ async def test_min_priority_raises_every_push(make_config, ntfy) -> None:  # typ
         await n.publish("no priority given")
         await n.publish("urgent", priority=5)
     assert [b["priority"] for b in ntfy.bodies] == [4, 4, 5]
+
+
+def test_env_pins_a_specific_build(capsys: pytest.CaptureFixture[str]) -> None:
+    _, out, _ = run(capsys, "--host", "pi.tail1234.ts.net", "--tag", "sha-1a2b3c4")
+    assert "RINGHUB_TAG=sha-1a2b3c4\n" in out

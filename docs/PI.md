@@ -67,13 +67,21 @@ docker compose exec ntfy ntfy access iphone 'ring-*' read-only
 The hub can only publish and your phone can only read. Nobody else can do either, because the
 server denies everything by default.
 
-## 4. Build and start ringhub, then publish both to your tailnet
+## 4. Start ringhub, then publish both to your tailnet
+
+The Pi doesn't build anything. GitHub Actions tests every commit, builds the image for arm64 and
+amd64, boots the arm64 build as a check, and publishes it to
+`ghcr.io/waymarklabs-official/pebble-custom`. The Pi just downloads it.
 
 ```bash
-docker compose up -d --build                                         # builds the ringhub image: 3-5 min on a Pi
+docker compose pull                                                  # downloads the tested image
+docker compose up -d
 docker compose exec ringhub ringhub check -c /app/config.yaml        # everything should say "on"
 sudo bash deploy/pi/serve.sh                                         # adds :8443 and :8444 only
 ```
+
+`RINGHUB_TAG` in `.env` chooses the build: `main` follows the default branch, and
+`sha-1a2b3c4` (from the Actions run or the package page) pins one exact, tested build.
 
 `serve.sh` shows your Tailscale mappings before and after, so you can see Tstream's entry is
 unchanged. The mappings survive reboots, and the containers restart on their own.
@@ -118,7 +126,8 @@ was asleep. Background details are in [SETUP.md](SETUP.md#4-tell-it-where-you-ar
 | Task | Command |
 |---|---|
 | Logs | `docker compose logs -f ringhub` (or `ntfy`) |
-| Update | `git pull && docker compose up -d --build` |
+| Update | `git pull && docker compose pull && docker compose up -d` |
+| Roll back | Set `RINGHUB_TAG=sha-<previous>` in `.env`, then `docker compose up -d` |
 | Back up | Copy `~/ringhub/data`, `~/ringhub/ntfy`, `.env` and `config.yaml` (or Dashboard → Setup → Backup for modes/skills) |
 | Stop serving | `sudo tailscale serve --https=8443 off` and `sudo tailscale serve --https=8444 off` |
 
@@ -145,8 +154,10 @@ in the ntfy app remove and re-add the server.
 | `https://…:8443` times out from the phone | `sudo tailscale serve status` should list 8443. If your tailnet uses custom ACLs, allow the phone TCP 8443 and 8444. |
 | The first request after setup takes a minute | Tailscale is issuing the HTTPS certificate. This happens once. |
 | `ntfy` won't start: permission denied | `data/` or `ntfy/` was created by Docker as root: `sudo chown -R 1000:1000 data ntfy`. |
-| Build fails compiling a package (`gcc`, `uvloop`, `pydantic-core`) | The Pi is on a 32-bit OS. `uname -m` must say `aarch64`; reinstall Raspberry Pi OS (64-bit). |
-| `pull access denied for ringhub` | The image wasn't built yet: run `docker compose up -d --build` from `~/ringhub`. |
+| `no matching manifest for linux/arm/v7` | The Pi is on a 32-bit OS. `uname -m` must say `aarch64`; reinstall Raspberry Pi OS (64-bit). |
+| `denied` or `unauthorized` pulling `ghcr.io/…/pebble-custom` | The package is still private. On GitHub: your org → **Packages** → **pebble-custom** → **Package settings** → **Change visibility** → **Public** (one time). |
+| `manifest unknown` pulling the image | No image exists for that `RINGHUB_TAG` yet. Check the repo's **Actions** tab for a green run, or use a tag it published. |
+| Pull times out | Run `bash deploy/pi/preflight.sh`: its Registry section shows whether this network blocks `ghcr.io`. |
 
 **Privacy note:** the ntfy.sh relay only ever sees a hash of your topic URL and a message ID,
 never the content. The Tailscale HTTPS certificate makes your machine name public in certificate

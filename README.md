@@ -70,7 +70,7 @@ or CDN.
 ## Get started
 
 ```bash
-pip install -e '.[llm]'            # Python 3.11+, or: docker compose up -d --build
+pip install -e '.[llm]'            # Python 3.11+ (Docker users: see docs/PI.md)
 cp config.example.yaml config.yaml && cp .env.example .env    # fill in secrets
 ringhub check && ringhub serve
 ```
@@ -99,4 +99,5 @@ minutes. The [design doc](docs/DESIGN.md) explains the model, and
   - Dashboard sessions are HttpOnly, SameSite=Strict, with a CSRF header and a strict CSP.
   - Transcripts are never templates, `exec` is off by default, and geofence input is debounced.
 - **Ops:** `ringhub check`, `/healthz`, an activity log, catalog export/import, Docker (non-root,
-  multi-arch), a hardened systemd unit, and CI running ruff, `mypy --strict` and pytest.
+  multi-arch), a hardened systemd unit, and CI running ruff, `mypy --strict` and pytest, then
+  publishing a smoke-tested amd64 + arm64 image to GHCR.

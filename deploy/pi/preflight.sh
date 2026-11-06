@@ -23,6 +23,15 @@ echo "Docker"
 if command -v docker >/dev/null; then ok "$(docker --version)"; else fail "docker not installed (curl -fsSL https://get.docker.com | sh)"; fi
 docker compose version >/dev/null 2>&1 && ok "$(docker compose version | head -1)" || fail "docker compose plugin missing"
 
+echo "Registry (the Pi pulls prebuilt images; it never builds)"
+for url in https://ghcr.io/v2/ https://pkg-containers.githubusercontent.com/ https://registry-1.docker.io/v2/; do
+  code="$(curl -sS -o /dev/null -m 15 -w '%{http_code}' "$url" 2>/dev/null || true)"
+  case "$code" in
+    2*|3*|401|403|404|405) ok "reachable: ${url#https://}";;
+    *) fail "cannot reach ${url#https://} (HTTP '${code:-none}'): this network blocks image downloads";;
+  esac
+done
+
 echo "Tailscale"
 if ! command -v tailscale >/dev/null; then fail "tailscale not installed"; else
   ok "tailscale $(tailscale version | head -1)"

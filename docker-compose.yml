@@ -1,12 +1,18 @@
 # ringhub + its own private ntfy server. Runs as-is on a Raspberry Pi 4/5 (arm64) or a mini PC.
 #
+# Production: both images are published, prebuilt and tested (ringhub by this repo's CI, for
+# arm64 and amd64); this machine only pulls them. Nothing is compiled or pip-installed here.
+#
 # Both services listen on 127.0.0.1 only. `tailscale serve` publishes them to your tailnet over
-# HTTPS on their own ports (8443, 8444), so nothing else on the machine (e.g. Tstream on 443)
-# is touched. Full walkthrough: docs/PI.md
+# HTTPS on their own ports, so nothing else on the machine (e.g. Tstream) is touched.
+# Full walkthrough: docs/PI.md
 #
 #   mkdir -p data ntfy/cache ntfy/lib       # BEFORE the first `up` (else Docker creates them as root)
 #   PYTHONPATH=src python3 -m ringhub.envfile --host <pi>.<tailnet>.ts.net --tz <Zone/City> > .env
-#   docker compose up -d --build
+#   docker compose pull && docker compose up -d
+#
+# Developing ringhub itself? Build from this checkout instead:
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 
 x-logging: &logging
   driver: json-file
@@ -14,8 +20,8 @@ x-logging: &logging
 
 services:
   ringhub:
-    build: .
-    image: ringhub:latest
+    # RINGHUB_TAG in .env: "main" follows the default branch; "sha-<7 chars>" pins one tested build.
+    image: ghcr.io/waymarklabs-official/pebble-custom:${RINGHUB_TAG:-main}
     restart: unless-stopped
     init: true
     user: "1000:1000"
