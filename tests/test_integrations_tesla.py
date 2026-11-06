@@ -228,7 +228,7 @@ async def test_tesla_refusals_are_explained(rt: Runtime, fleet: Fleet, status: i
 async def test_blocked_network_is_explained(rt: Runtime, fleet: Fleet) -> None:
     fleet.vehicle.side_effect = httpx.ConnectError("Name or service not known")
     assert rt.tesla is not None
-    with pytest.raises(ActionError, match="couldn't reach tesla.test from this machine"):
+    with pytest.raises(ActionError, match=r"couldn.t reach tesla\.test from this machine"):
         await rt.tesla.online_state()
 
 
