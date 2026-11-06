@@ -61,7 +61,8 @@ if a[:3] == ["status", "--self", "--json"]:
     print(json.dumps({"Self": {"DNSName": host + "."}})); sys.exit()
 if a[:1] == ["serve"] and a[1:2] == ["status"]:
     root = os.environ.get("FAKE_AS_ROOT") == "1" or os.environ.get("FAKE_UID") == "0"
-    if os.environ.get("FAKE_TS_STATUS_DENIED") or not root:      # like tailscaled without an operator
+    operator = os.environ.get("FAKE_TS_OPERATOR") == "1"          # tailscale up --operator=$USER
+    if os.environ.get("FAKE_TS_STATUS_DENIED") or not (root or operator):   # like tailscaled without an operator
         sys.exit("access denied")
     print(json.dumps(doc) if "--json" in a else "\n".join(sorted(doc.get("Web", {})))); sys.exit()
 if a[:1] == ["serve"]:
@@ -84,10 +85,20 @@ sys.exit(f"fake tailscale: unhandled {a}")
 FAKES = {
     "uname": '[ "$*" = -m ] || { echo "fake uname: $*" >&2; exit 1; }; echo aarch64',
     "dpkg": '[ "$*" = --print-architecture ] || exit 1; echo "${FAKE_DPKG:-arm64}"',
-    "id": 'case "$*" in -u) echo "${FAKE_UID:-1000}";; -un) echo pi;; *) echo "fake id: $*" >&2; exit 1;; esac',
-    # Real sudo would ask for a password (and hang a script) without -n.
+    "id": """case "$*" in
+  -u) echo "${FAKE_UID:-1000}";;
+  -un) if [ "${FAKE_UID:-1000}" = 0 ]; then echo root; else echo pi; fi;;
+  *) echo "fake id: $*" >&2; exit 1;;
+esac""",
+    # Real sudo would ask for a password (and hang a script) without -n. Root never needs one.
+    # `-u <user>` runs the command as that user (uid 1000 here), without root's access.
     "sudo": """[ "$1" = -n ] || { echo "sudo: a password is required" >&2; exit 1; }; shift
-[ -n "${FAKE_SUDO_DENIED:-}" ] && exit 1; FAKE_AS_ROOT=1 FAKE_UID=0 exec "$@\"""",
+as_root=1
+if [ "${1:-}" = -u ]; then [ -n "${2:-}" ] || exit 1; as_root=""; shift 2; fi
+case "${1:-}" in -*|"") echo "fake sudo: unexpected: $*" >&2; exit 1;; esac
+[ "${FAKE_UID:-1000}" != 0 ] && [ -n "${FAKE_SUDO_DENIED:-}" ] && exit 1
+if [ -n "$as_root" ]; then FAKE_AS_ROOT=1 FAKE_UID=0 exec "$@"; fi
+FAKE_AS_ROOT="" FAKE_UID=1000 exec "$@\"""",
     "docker": """case "$*" in
   --version) echo "Docker version 29.0.0, build fake";;
   info) [ -n "${FAKE_DOCKER_NEEDS_SUDO:-}" ] && [ "${FAKE_AS_ROOT:-}" != 1 ] && exit 1; exit 0;;
@@ -106,20 +117,50 @@ printf 401""",
     "ss": """[ "$*" = -ltn ] || { echo "fake ss: $*" >&2; exit 1; }
 echo "State  Recv-Q Send-Q Local Address:Port  Peer Address:PortProcess"
 for a in ${FAKE_LISTEN:-}; do echo "LISTEN 0      4096   $a  0.0.0.0:*"; done""",
+    # FAKE_UPSTREAM: what branch.<name>.remote/merge say ("" = no upstream). FAKE_REMOTE_BRANCH: the
+    # branch GitHub has. FAKE_DIRTY / FAKE_DIFF ("S:path|..."): local changes; FAKE_COMMITTED: files
+    # that local commits on top of FAKE_REMOTE change. ssh: git uses GIT_SSH_COMMAND, else GIT_SSH,
+    # else core.sshCommand (FAKE_SSH_COMMAND), else plain ssh, which would prompt without BatchMode.
     "git": """[ "$1 $2" = "-c safe.directory=$(pwd -P)" ] \\
   || { echo "fake git: no safe.directory for $(pwd -P): $*" >&2; exit 129; }
 shift 2
+if [ "$1" = for-each-ref ]; then
+  [ $# = 3 ] && [ "$2" = "--format=%(upstream:remotename) %(upstream:remoteref)" ] \\
+    && [ "$3" = "refs/heads/$FAKE_BRANCH" ] || { echo "fake git: unexpected: $*" >&2; exit 129; }
+  u="${FAKE_UPSTREAM-origin refs/heads/$FAKE_BRANCH}"; echo "${u:- }"; exit 0
+fi
+if [ "$1 $2 $3 $4 $5" = "--no-optional-locks diff --no-renames --name-status -z" ] && [ $# = 7 ] && [ "$7" = -- ]; then
+  # Real `git diff` rewrites the index it reads, even with --no-optional-locks: only a copy is safe.
+  [ -f "${GIT_INDEX_FILE:-}" ] && [ "$(cd "$(dirname "$GIT_INDEX_FILE")" && pwd -P)" != "$(pwd -P)/.git" ] \\
+    || { echo "fake git: diff would rewrite .git/index" >&2; exit 129; }
+  case "$6" in
+    HEAD) ;;
+    "$FAKE_REMOTE") for f in ${FAKE_COMMITTED:-}; do printf 'M\\0%s\\0' "$f"; done;;
+    *) echo "fatal: bad revision '$6'" >&2; exit 128;;
+  esac
+  for f in ${FAKE_DIRTY:-}; do printf 'M\\0%s\\0' "$f"; done
+  IFS='|' read -r -a extra <<<"${FAKE_DIFF:-}"
+  for e in ${extra[@]+"${extra[@]}"}; do printf '%s\\0%s\\0' "${e%%:*}" "${e#*:}"; done
+  exit 0
+fi
 case "$*" in
   "rev-parse HEAD") [ -n "${FAKE_HEAD:-}" ] || exit 128; echo "$FAKE_HEAD";;
+  "rev-parse --git-path index") [ -n "${FAKE_HEAD:-}" ] || exit 128; echo .git/index;;
   "symbolic-ref --quiet --short HEAD") [ -n "${FAKE_BRANCH:-}" ] || exit 1; echo "$FAKE_BRANCH";;
-  "rev-parse --abbrev-ref --symbolic-full-name @{u}")
-    [ -n "${FAKE_BRANCH:-}" ] || exit 128; echo "origin/$FAKE_BRANCH";;
-  "ls-remote --exit-code origin refs/heads/"*)
+  "config core.sshCommand") [ -n "${FAKE_SSH_COMMAND:-}" ] || exit 1; echo "$FAKE_SSH_COMMAND";;
+  "ls-remote --exit-code "*)
+    [ $# = 4 ] || { echo "fake git: unexpected: $*" >&2; exit 129; }
     [ -n "${FAKE_OFFLINE:-}" ] && exit 128
+    case " ${FAKE_REMOTES:-origin} " in
+      *" $3 "*) ;;
+      *) echo "fatal: '$3' does not appear to be a git repository" >&2; exit 128;;
+    esac
+    want="${FAKE_NEEDS_SSH:-ssh -o BatchMode=yes -o ConnectTimeout=10}"
+    used="${GIT_SSH_COMMAND:-${GIT_SSH:-${FAKE_SSH_COMMAND:-ssh}}}"
+    [ "$used" = "$want" ] || { echo "fake git: ssh would run '$used', not '$want'" >&2; exit 128; }
     [ "$4" = "refs/heads/${FAKE_REMOTE_BRANCH-$FAKE_BRANCH}" ] || exit 2      # real git: a missing ref exits 2
     printf '%s\\t%s\\n' "$FAKE_REMOTE" "$4";;
   "merge-base --is-ancestor "*" HEAD") case " ${FAKE_ANCESTORS:-} " in *" $3 "*) exit 0;; esac; exit 1;;
-  "--no-optional-locks status --porcelain --untracked-files=no") for f in ${FAKE_DIRTY:-}; do echo " M $f"; done;;
   *) echo "fake git: unexpected: $*" >&2; exit 129;;
 esac""",
     # Everything goes to the real Python except the registry lookup (tested in test_pitools.py).
@@ -144,9 +185,12 @@ class Result:
 
 @pytest.fixture
 def pi(tmp_path: Path) -> Callable[..., Result]:
-    repo, bin_ = tmp_path / "ringhub", tmp_path / "bin"
+    repo, bin_, bin_git = tmp_path / "ringhub", tmp_path / "bin", tmp_path / "bin-git"
     (repo / "deploy" / "pi").mkdir(parents=True)
+    (repo / ".git").mkdir()
+    (repo / ".git" / "index").write_bytes(b"")
     bin_.mkdir()
+    bin_git.mkdir()
     for script in ("preflight.sh", "serve.sh"):
         shutil.copy(ROOT / "deploy" / "pi" / script, repo / "deploy" / "pi" / script)
     shutil.copy(ROOT / "docker-compose.yml", repo / "docker-compose.yml")
@@ -155,13 +199,13 @@ def pi(tmp_path: Path) -> Callable[..., Result]:
     link.symlink_to(repo, target_is_directory=True)
     fakes = {**FAKES, "tailscale": FAKE_TAILSCALE.replace("HOST", HOST)}
     for name, body in fakes.items():
-        f = bin_ / name
+        f = (bin_git if name == "git" else bin_) / name
         text = body.replace("PYTHON", sys.executable)
         f.write_text(text if text.startswith("#!") else "#!/usr/bin/env bash\n" + text + "\n")
         f.chmod(f.stat().st_mode | stat.S_IEXEC)
 
     def run(script: str, *args: str, env_file: str | None = ENV_8445, status: dict[str, Any] | None = None,
-            compose: str | None = None, **fake: str) -> Result:
+            compose: str | None = None, real_git: bool = False, **fake: str) -> Result:
         (repo / "docker-compose.yml").write_text(compose or (ROOT / "docker-compose.yml").read_text())
         env_path = repo / ".env"
         if env_file is None:
@@ -171,7 +215,8 @@ def pi(tmp_path: Path) -> Callable[..., Result]:
         state, log = tmp_path / "state.json", tmp_path / "changes.log"
         state.write_text(json.dumps(PI_STATUS if status is None else status))
         log.write_text("")
-        env = {"PATH": f"{bin_}:{os.environ['PATH']}", "HOME": str(tmp_path), "FAKE_TS_STATE": str(state),
+        path = f"{bin_}:{os.environ['PATH']}" if real_git else f"{bin_git}:{bin_}:{os.environ['PATH']}"
+        env = {"PATH": path, "HOME": str(tmp_path), "FAKE_TS_STATE": str(state),
                "FAKE_TS_LOG": str(log), "FAKE_BRANCH": BRANCH, "FAKE_HEAD": HEAD, "FAKE_REMOTE": HEAD,
                "FAKE_LISTEN": PI_LISTEN, **{k.upper(): v for k, v in fake.items()}}
         if script == "serve.sh":
@@ -221,6 +266,99 @@ def test_preflight_says_when_the_branch_is_gone_from_github(pi: Callable[..., Re
     assert r.code == 1
     assert f"GitHub no longer has the branch {BRANCH} (merged?). Switch to main: git checkout main && git pull" \
         in r.lines("✗")
+
+
+def test_preflight_a_branch_that_was_never_pushed_is_not_called_merged(pi: Callable[..., Result]) -> None:
+    """No upstream configured: missing on GitHub means 'not pushed', not 'deleted, switch to main'."""
+    r = pi("preflight.sh", fake_upstream="", fake_remote_branch="something-else")
+    assert r.code == 0, r.out
+    assert not any("no longer has" in line for line in r.lines("✗"))
+    assert any(line.startswith(f"{BRANCH} isn't on GitHub (never pushed?), so no tested image exists for it")
+               for line in r.lines("!"))
+    pushed = pi("preflight.sh", fake_upstream="")          # pushed without -u: still compared with GitHub
+    assert f"up to date with GitHub ({HEAD[:7]})" in pushed.lines("✓")
+
+
+def test_preflight_reads_the_upstream_from_config(pi: Callable[..., Result]) -> None:
+    """A remote named fork/pi: splitting '@{u}' at the first '/' asked a remote called 'fork'."""
+    r = pi("preflight.sh", fake_upstream=f"fork/pi refs/heads/{BRANCH}", fake_remotes="fork/pi", fake_remote=NEWER)
+    assert r.code == 1
+    assert f"out of date: GitHub has {NEWER[:7]}, this is {HEAD[:7]}. Run: git pull   then run this check again" \
+        in r.lines("✗")
+    local = pi("preflight.sh", fake_upstream=". refs/heads/main")       # follows a local branch
+    assert any(line.startswith(f"{BRANCH} follows the local branch main, not one on GitHub")
+               for line in local.lines("!"))
+    assert not any("GitHub" in line for line in local.lines("✓"))
+
+
+@pytest.mark.parametrize("ssh", [{"fake_ssh_command": "ssh -i ~/.ssh/deploy"},       # core.sshCommand
+                                 {"git_ssh_command": "ssh -i ~/.ssh/deploy"},
+                                 {"git_ssh": "/usr/local/bin/deploy-ssh"}])
+def test_preflight_keeps_a_configured_ssh_command(pi: Callable[..., Result], ssh: dict[str, str]) -> None:
+    """A deploy key in core.sshCommand/GIT_SSH(_COMMAND): overriding it hid an out-of-date checkout."""
+    r = pi("preflight.sh", fake_needs_ssh=next(iter(ssh.values())), fake_remote=NEWER, **ssh)
+    assert r.code == 1 and any(line.startswith("out of date: GitHub has") for line in r.lines("✗")), r.out
+
+
+def test_preflight_suggests_the_tag_of_the_github_branch_it_follows(pi: Callable[..., Result]) -> None:
+    """Local branch pi2 tracking the GitHub branch: CI only tags images by GitHub's branch name."""
+    r = pi("preflight.sh", env_file=ENV_8445.replace("RINGHUB_TAG=sha-8b75463\n", ""), fake_branch="pi2",
+           fake_upstream=f"origin refs/heads/{BRANCH}", fake_remote_branch=BRANCH, fake_missing_images=":pi2")
+    assert f"up to date with GitHub ({HEAD[:7]})" in r.lines("✓")
+    assert "RINGHUB_TAG=claude-pebble-ring-automation-kqoqn3" in r.out
+    assert "RINGHUB_TAG=pi2" not in r.out and ":pi2" not in r.out
+
+
+def test_preflight_out_of_date_with_changed_files_says_to_put_them_back_first(pi: Callable[..., Result]) -> None:
+    """`git pull` refuses to overwrite a changed file; stashing or committing is how a Pi got stuck."""
+    r = pi("preflight.sh", fake_remote=NEWER, fake_dirty="docker-compose.yml")
+    assert r.code == 1
+    fails = r.lines("✗")
+    assert fails[0] == (f"out of date: GitHub has {NEWER[:7]}, this is {HEAD[:7]}. First put back the files "
+                        "changed on this machine (below; don't stash or commit them), then: git pull   then run "
+                        "this check again")
+    assert fails[1].startswith("files changed on this machine")
+    assert "put the files back: git checkout HEAD -- docker-compose.yml" in r.out
+
+
+def test_preflight_ahead_of_github_with_committed_changes_is_not_a_tick(pi: Callable[..., Result]) -> None:
+    """A committed compose edit: 'git checkout HEAD -- …' restores the edit itself, so name GitHub's commit."""
+    old = (ROOT / "docker-compose.yml").read_text().replace(
+        "image: ghcr.io/waymarklabs-official/pebble-custom:${RINGHUB_TAG:-main}", "image: ringhub:latest")
+    r = pi("preflight.sh", compose=old, fake_remote=OLDER, fake_ancestors=OLDER, fake_committed="docker-compose.yml",
+           fake_missing_images="ringhub:latest")
+    assert r.code == 1
+    assert not any(line.startswith("ahead of GitHub") for line in r.lines("✓"))
+    assert (f"ahead of GitHub (local commits on top of {OLDER[:7]}), and these files differ from GitHub's, so "
+            "this isn't the tested setup (settings belong in .env and config.yaml):") in r.lines("✗")
+    assert (f"see the changes: git diff {OLDER[:7]}      put the files back: git checkout {OLDER[:7]} -- "
+            "docker-compose.yml") in r.out
+    assert ("docker-compose.yml doesn't run the published ringhub image (it names ringhub:latest). "
+            f"Put it back: git checkout {OLDER[:7]} -- docker-compose.yml") in r.lines("✗")
+
+
+def test_preflight_put_back_command_is_safe_to_paste(pi: Callable[..., Result]) -> None:
+    """A staged rename once printed `git checkout HEAD -- a -> b`, which truncated b when pasted."""
+    r = pi("preflight.sh", fake_diff="D:config.example.yaml|A:my config.yaml|M:a;b $(x)")
+    assert r.code == 1
+    listed = r.out[r.out.index("files changed on this machine"):].splitlines()[1:4]
+    assert [line.strip() for line in listed] == ["config.example.yaml", "my config.yaml", "a;b $(x)"]
+    assert ("put the files back: git checkout HEAD -- config.example.yaml a\\;b\\ \\$\\(x\\) "
+            "&& git reset -q HEAD -- my\\ config.yaml") in r.out
+    assert "->" not in r.out
+
+
+@pytest.mark.skipif(not hasattr(os, "geteuid") or os.geteuid() != 0, reason="needs root to chown")
+def test_preflight_root_owned_git_hint_works_for_any_owner(pi: Callable[..., Result], tmp_path: Path) -> None:
+    repo = tmp_path / "ringhub"
+    os.chown(repo, 4242, 4242)                      # a uid with no passwd entry: `find ! -user` can't use it
+    os.chown(repo / ".git", 4242, 4242)             # .git/index stays root's, as after `sudo git ...`
+    r = pi("preflight.sh", fake_remote=NEWER)
+    assert "Fix: sudo chown -R 4242:4242 .git   then git pull (without sudo)" in r.out
+    os.chown(repo, 0, 0)
+    os.chown(repo / ".git" / "index", 4242, 4242)
+    r = pi("preflight.sh", fake_remote=NEWER)
+    assert "Fix: sudo chown -R root: .git   then git pull (without sudo)" in r.out
 
 
 def test_preflight_never_gives_a_green_tick_it_cannot_back_up(pi: Callable[..., Result]) -> None:
@@ -294,9 +432,38 @@ def test_preflight_names_blocked_download_hosts_and_missing_images(pi: Callable[
     assert any("pebble-custom:sha-8b75463: no such image" in line for line in fails)
 
 
-def test_preflight_without_serve_access_says_to_use_sudo(pi: Callable[..., Result]) -> None:
-    r = pi("preflight.sh", fake_ts_status_denied="1", fake_sudo_denied="1")
-    assert r.code == 0 and any("run this again with sudo" in line for line in r.lines("!"))
+def test_preflight_without_serve_access_is_not_ready_when_env_exists(pi: Callable[..., Result]) -> None:
+    """sudo needs a password, so the ports in .env can't be checked: never 'Ready' (a clash would
+    only surface at serve.sh, after the containers were already recreated with the wrong URL)."""
+    r = pi("preflight.sh", env_file=ENV_8445.replace(":8446", ":8444"), fake_sudo_denied="1")
+    assert r.code == 1 and "Ready" not in r.out
+    assert ("couldn't read tailscale serve status, so the ports in .env weren't checked against your tailnet. "
+            "Run it with sudo: sudo bash deploy/pi/preflight.sh") in r.lines("✗")
+    fresh = pi("preflight.sh", env_file=None, fake_sudo_denied="1")         # nothing to protect yet
+    assert fresh.code == 0 and any("run this again with sudo" in line for line in fresh.lines("!"))
+
+
+def test_preflight_prints_sudo_docker_when_docker_is_unreachable(pi: Callable[..., Result]) -> None:
+    """sudo needs a password, so `sudo -n docker` fails too: the printed commands still need sudo."""
+    r = pi("preflight.sh", fake_docker_needs_sudo="1", fake_sudo_denied="1", fake_ts_operator="1")
+    assert r.code == 0, r.out
+    assert any(line.startswith("couldn't reach the Docker daemon as pi. Use sudo") for line in r.lines("!"))
+    assert "  sudo docker compose pull && sudo docker compose up -d" in r.out.splitlines()
+
+
+def test_preflight_run_with_sudo_judges_docker_and_uid_for_the_user(pi: Callable[..., Result]) -> None:
+    """`sudo bash deploy/pi/preflight.sh` (as it asks): root reaches Docker, the user doesn't."""
+    as_sudo = {"fake_uid": "0", "fake_as_root": "1", "sudo_user": "pi", "sudo_uid": "1000"}
+    r = pi("preflight.sh", env_file=ENV_8445.replace(":8446", ":8444"), fake_docker_needs_sudo="1", **as_sudo)
+    assert r.code == 1
+    assert "you are uid 1000 (matches the containers)" in r.lines("✓")
+    assert not any("you are uid 0" in line for line in r.lines("!"))
+    assert "daemon reachable with sudo: put sudo in front of every docker command" in r.lines("✓")
+    (msg,) = r.lines("✗")
+    assert f"in .env set NTFY_PUBLIC_URL=https://{HOST}:8446, then: sudo docker compose up -d." in msg
+    member = pi("preflight.sh", **as_sudo)                                  # the user is in the docker group
+    assert member.code == 0 and "daemon reachable" in member.lines("✓")
+    assert "  docker compose pull && docker compose up -d" in member.out.splitlines()
 
 
 def test_preflight_fresh_install_prints_the_exact_next_commands(pi: Callable[..., Result]) -> None:
@@ -346,7 +513,8 @@ def test_preflight_never_suggests_regenerating_an_existing_env(pi: Callable[...,
     assert "Change only RINGHUB_PUBLIC_URL in .env to a free port" in msg and "don't regenerate .env" in msg
 
 
-@pytest.mark.parametrize("listen", ["127.0.0.1:8445 [::1]:8446", "127.0.0.53%lo:8445"])
+@pytest.mark.parametrize("listen", ["127.0.0.1:8445 [::1]:8446", "127.0.0.53%lo:8445",
+                                    "0.0.0.0%lo:8445 [::1]%lo:8446", "[::ffff:127.0.0.1]:8446"])
 def test_loopback_only_listeners_do_not_block(pi: Callable[..., Result], listen: str) -> None:
     assert pi("preflight.sh", env_file=None, status=ONLY_TSTREAM, fake_listen=listen).code == 0
     assert pi("serve.sh", status=ONLY_TSTREAM, fake_listen=listen).code == 0
@@ -375,6 +543,111 @@ def test_preflight_ready_lines_are_exact(pi: Callable[..., Result]) -> None:
                     "  sudo docker compose pull && sudo docker compose up -d",
                     "  sudo docker compose exec ringhub ringhub check -c /app/config.yaml",
                     "  sudo bash deploy/pi/serve.sh"]
+
+
+# --- preflight with real git ------------------------------------------------------------------
+# The fake git can't show what real git does with a pruned upstream, with the index, or with a
+# pasted command, so these use a real clone of a real bare "origin".
+
+OLD_COMPOSE = (ROOT / "docker-compose.yml").read_text().replace(
+    "image: ghcr.io/waymarklabs-official/pebble-custom:${RINGHUB_TAG:-main}", "build: .\n    image: ringhub:latest")
+
+
+def _git(cwd: Path, *args: str) -> str:
+    env = {"PATH": os.environ["PATH"], "HOME": str(cwd.parent), "GIT_CONFIG_NOSYSTEM": "1",
+           "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+    return subprocess.run(["git", *args], cwd=cwd, env=env, check=True, capture_output=True, text=True,
+                          timeout=60).stdout.strip()
+
+
+def _paste(r: Result, repo: Path) -> None:
+    """Run the 'put the files back' command exactly as printed, as a user pasting it would."""
+    m = re.search(r"put the files back: (.*)", r.out)
+    assert m, r.out
+    subprocess.run(["bash", "-c", m.group(1)], cwd=repo, env={"PATH": os.environ["PATH"], "HOME": str(repo.parent)},
+                   check=True, capture_output=True, timeout=60)
+
+
+@pytest.fixture
+def real_repo(pi: Callable[..., Result], tmp_path: Path) -> Path:
+    if shutil.which("git") is None:
+        pytest.skip("needs git")
+    repo, origin = tmp_path / "ringhub", tmp_path / "origin.git"
+    shutil.rmtree(repo / ".git")
+    shutil.copy(ROOT / "config.example.yaml", repo / "config.example.yaml")
+    (repo / ".gitignore").write_text(".env\nsrc\ndeploy/\n")
+    _git(tmp_path, "init", "-q", "--bare", str(origin))
+    _git(repo, "init", "-q", "-b", BRANCH)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "one")
+    _git(repo, "remote", "add", "origin", str(origin))
+    _git(repo, "push", "-q", "-u", "origin", BRANCH)
+    return repo
+
+
+def test_real_git_a_merged_and_pruned_branch_is_reported(pi: Callable[..., Result], real_repo: Path,
+                                                         tmp_path: Path) -> None:
+    """GitHub deleted the branch after the merge and `git pull` pruned the tracking ref: @{u} is gone."""
+    _git(tmp_path / "origin.git", "branch", "-D", BRANCH)
+    _git(real_repo, "fetch", "-q", "--prune")
+    r = pi("preflight.sh", real_git=True)
+    assert r.code == 1
+    assert f"GitHub no longer has the branch {BRANCH} (merged?). Switch to main: git checkout main && git pull" \
+        in r.lines("✗")
+
+
+def test_real_git_leaves_git_untouched_and_its_put_back_command_works(pi: Callable[..., Result],
+                                                                      real_repo: Path) -> None:
+    """A staged rename (with a space) plus a changed compose file. .gitignore is touched but not
+    changed, so the index is stale and `git diff` would rewrite it (root's, under sudo)."""
+    _git(real_repo, "mv", "config.example.yaml", "my config.yaml")
+    os.utime(real_repo / ".gitignore", ns=(10**18, 10**18))
+    index = real_repo / ".git" / "index"
+    before = (index.read_bytes(), index.stat().st_mtime_ns, index.stat().st_uid)
+    r = pi("preflight.sh", real_git=True, compose=OLD_COMPOSE, fake_missing_images="ringhub:latest")
+    assert r.code == 1
+    assert (index.read_bytes(), index.stat().st_mtime_ns, index.stat().st_uid) == before
+    assert ".gitignore" not in r.out                                   # touched, not changed
+    _paste(r, real_repo)
+    assert _git(real_repo, "status", "--porcelain", "--untracked-files=no") == ""
+    assert (real_repo / "config.example.yaml").read_text() == (ROOT / "config.example.yaml").read_text()
+    assert (real_repo / "my config.yaml").read_text() == (ROOT / "config.example.yaml").read_text()  # kept
+    again = pi("preflight.sh", real_git=True)
+    assert again.code == 0, again.out
+    assert f"up to date with GitHub ({_git(real_repo, 'rev-parse', '--short=7', 'HEAD')})" in again.lines("✓")
+
+
+def test_real_git_a_committed_edit_is_caught_and_its_fix_does_not_loop(pi: Callable[..., Result],
+                                                                       real_repo: Path) -> None:
+    """The compose edit was committed (as git's own hint suggests): HEAD has it, GitHub doesn't."""
+    upstream = _git(real_repo, "rev-parse", "--short=7", "HEAD")
+    (real_repo / "docker-compose.yml").write_text(OLD_COMPOSE)
+    _git(real_repo, "commit", "-qam", "run my local image")
+    r = pi("preflight.sh", real_git=True, compose=OLD_COMPOSE, fake_missing_images="ringhub:latest")
+    assert r.code == 1
+    assert not any(line.startswith("ahead of GitHub") for line in r.lines("✓"))
+    assert f"Put it back: git checkout {upstream} -- docker-compose.yml" in r.out
+    _paste(r, real_repo)
+    again = pi("preflight.sh", real_git=True)                         # the file as it now is (GitHub's)
+    assert again.code == 0, again.out
+    assert f"ahead of GitHub (local commits on top of {upstream})" in again.lines("✓")
+
+
+def test_pi_docs_upgrade_covers_failed_pulls_sudo_and_the_iphone() -> None:
+    """The upgrade steps a stuck Pi follows: what to do when `git pull` stops, docker needing sudo,
+    and the iPhone only when NTFY_PUBLIC_URL changed."""
+    doc = (ROOT / "docs" / "PI.md").read_text()
+    upgrade = doc[doc.index("## Upgrading an existing install"):doc.index("## Everyday operations")]
+    step1 = upgrade[upgrade.index("1. **Get the new scripts"):upgrade.index("2. **Fix what it flags")]
+    for text in ("unmerged files", "would be overwritten", "git checkout HEAD -- docker-compose.yml",
+                 "Don't `git stash` or `git commit`"):
+        assert text in step1, text
+    assert "put `sudo` in front of every\n`docker` command below" in upgrade[:upgrade.index("1. **")]
+    assert "nothing to redo on the\niPhone." not in upgrade
+    assert "If `NTFY_PUBLIC_URL` is the same as before,\nthere's nothing to redo on the iPhone" in upgrade
+    troubleshooting = doc[doc.index("## Troubleshooting"):]
+    assert "Pulling is not possible because you have unmerged files" in troubleshooting
+    assert "Your local changes to the following files would be overwritten" in troubleshooting
 
 
 # --- serve.sh ---------------------------------------------------------------------------------
@@ -445,8 +718,35 @@ def test_serve_undoes_its_own_changes_when_publishing_fails_halfway(pi: Callable
 
 
 def test_serve_never_suggests_regenerating_env(pi: Callable[..., Result]) -> None:
-    r = pi("serve.sh", env_file=ENV_8445.replace(":8445", ":8443"))
+    r = pi("serve.sh", env_file=ENV_8445.replace(":8445", ":8443"), status=ONLY_TSTREAM)
     assert r.code == 1 and "Change only RINGHUB_PUBLIC_URL in .env" in r.out and "Don't regenerate .env" in r.out
+
+
+def test_serve_points_a_clashing_port_at_where_ntfy_already_is(pi: Callable[..., Result]) -> None:
+    """Same advice as the preflight: following 'pick a free port' instead left ntfy's base URL on
+    the old port while the phone was given a new one, which silently delivers nothing."""
+    r = pi("serve.sh", env_file=ENV_8445.replace(":8446", ":8444"))         # *:8444 is another program's
+    assert r.code == 1 and r.changes == [] and r.state == PI_STATUS
+    assert ("port 8444 is used by a program on this machine (*:8444); publishing ntfy there would hide it.\n"
+            f"ntfy is already published on 8446: in .env set NTFY_PUBLIC_URL=https://{HOST}:8446, then: "
+            "sudo docker compose up -d, and run this again. It must match the server URL in the iPhone ntfy "
+            "app exactly, so re-add the server there if it changes.\nNothing changed.") in r.out
+
+
+@pytest.mark.parametrize(("env", "status", "listen", "expect"), [
+    (ENV_8445, ONLY_TSTREAM, "[::]:8446",
+     "Change only NTFY_PUBLIC_URL in .env to a free port (deploy/pi/preflight.sh checks it), then: sudo docker "
+     "compose up -d, and run this again. Don't regenerate .env: that would replace your secrets. It must match "
+     "the server URL in the iPhone ntfy app exactly"),
+    (ENV_8445.replace(":8445", ":8443"), PI_STATUS, PI_LISTEN,
+     f"ringhub is already published on 8445: in .env set RINGHUB_PUBLIC_URL=https://{HOST}:8445, then: sudo "
+     "docker compose up -d, and run this again. If it changes, update the ring app's webhook URLs"),
+])
+def test_serve_refusals_say_what_has_to_follow_a_changed_url(pi: Callable[..., Result], env: str,
+                                                              status: dict[str, Any], listen: str,
+                                                              expect: str) -> None:
+    r = pi("serve.sh", env_file=env, status=status, fake_listen=listen)
+    assert r.code == 1 and r.changes == [] and expect in r.out and "Nothing changed." in r.out
 
 
 @pytest.mark.parametrize(("args", "fake", "message"), [

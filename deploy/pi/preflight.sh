@@ -19,53 +19,106 @@ g() { git -c safe.directory="$HERE" "$@"; }   # works when run with sudo in a us
 
 # --- This checkout ------------------------------------------------------------------------------
 # An old preflight checks old things (one looked at ports 8443/8444), so say which one this is and
-# compare it with GitHub first. Nothing here writes to .git: ls-remote and rev-parse only read, and
-# status runs with --no-optional-locks (under sudo, a plain `git status` makes .git/index root's).
+# compare it with GitHub first. Nothing here writes to .git: ls-remote, rev-parse, for-each-ref,
+# config and merge-base only read, and diff reads a copy of the index (see below).
 HEAD_SHA="$(g rev-parse HEAD 2>/dev/null || true)"
 REV="${HEAD_SHA:0:7}"
 BRANCH=""
 [ -n "$HEAD_SHA" ] && BRANCH="$(g symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
 echo "ringhub preflight ${REV:-(not a git checkout)}${BRANCH:+ ($BRANCH)}"
 echo "This checkout"
+SYNC=""; REMOTE_SHA=""; TAG_BRANCH="$BRANCH"
 if [ -z "$HEAD_SHA" ]; then
   warn "this folder isn't a git checkout git can read, so it can't tell whether it's current. Run it in your clone (~/ringhub) after git pull"
 elif [ -z "$BRANCH" ]; then
   warn "not on a branch (detached at $REV), so it can't tell whether it's current. To follow a branch: git checkout <branch> && git pull"
 else
-  UPSTREAM="$(g rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
-  REMOTE_NAME="origin"; REMOTE_BRANCH="$BRANCH"
-  if [ -n "$UPSTREAM" ]; then REMOTE_NAME="${UPSTREAM%%/*}"; REMOTE_BRANCH="${UPSTREAM#*/}"; fi
-  REMOTE_SHA="$(GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -o BatchMode=yes -o ConnectTimeout=10' \
-    timeout 20 git -c safe.directory="$HERE" ls-remote --exit-code "$REMOTE_NAME" "refs/heads/$REMOTE_BRANCH" \
-    </dev/null 2>/dev/null | cut -f1; exit "${PIPESTATUS[0]}")"
-  LS_STATUS=$?
-  if [ "$LS_STATUS" = 2 ]; then
-    fail "GitHub no longer has the branch $REMOTE_BRANCH (merged?). Switch to main: git checkout main && git pull"
-  elif [ -z "$REMOTE_SHA" ]; then
-    warn "couldn't ask GitHub for the newest $REMOTE_BRANCH (offline?); checking $REV as it is"
-  elif [ "$REMOTE_SHA" = "$HEAD_SHA" ]; then
-    ok "up to date with GitHub ($REV)"
-  elif g merge-base --is-ancestor "$REMOTE_SHA" HEAD 2>/dev/null; then
-    ok "ahead of GitHub (local commits on top of ${REMOTE_SHA:0:7})"
+  # The branch this one follows, as configured. Read from the config, not from @{u}: that also
+  # works when the tracking ref was pruned (the branch was deleted on GitHub) and when the remote's
+  # name has a slash in it.
+  REMOTE_NAME=""; REMOTE_REF=""
+  read -r REMOTE_NAME REMOTE_REF < <(g for-each-ref --format='%(upstream:remotename) %(upstream:remoteref)' "refs/heads/$BRANCH" 2>/dev/null)
+  HAS_UPSTREAM=1
+  if [ -z "$REMOTE_NAME" ] || [ -z "$REMOTE_REF" ]; then HAS_UPSTREAM=0; REMOTE_NAME="origin"; REMOTE_REF="refs/heads/$BRANCH"; fi
+  REMOTE_BRANCH="${REMOTE_REF#refs/heads/}"
+  if [ "$REMOTE_NAME" = . ]; then
+    warn "$BRANCH follows the local branch $REMOTE_BRANCH, not one on GitHub, so it can't tell whether it's current. To follow GitHub's: git checkout <branch> && git pull"
   else
-    fail "out of date: GitHub has ${REMOTE_SHA:0:7}, this is $REV. Run: git pull   then run this check again"
-    OWNER="$(stat -c %U . 2>/dev/null || true)"
-    if [ -n "$OWNER" ] && find .git ! -user "$OWNER" -print -quit 2>/dev/null | grep -q .; then
-      info "some files in .git belong to another user (from a git command run with sudo), which makes git pull fail."
-      info "Fix: sudo chown -R $OWNER: .git   then git pull (without sudo)"
+    [ "$HAS_UPSTREAM" = 1 ] && TAG_BRANCH="$REMOTE_BRANCH"     # CI tags images by GitHub's branch name
+    # Never prompt, never hang. A deploy key set in core.sshCommand, GIT_SSH or GIT_SSH_COMMAND is
+    # kept: the variable below would override it.
+    OWN_SSH="${GIT_SSH_COMMAND:-}${GIT_SSH:-}"
+    [ -n "$OWN_SSH" ] || OWN_SSH="$(g config core.sshCommand 2>/dev/null || true)"
+    REMOTE_SHA="$([ -n "$OWN_SSH" ] || export GIT_SSH_COMMAND='ssh -o BatchMode=yes -o ConnectTimeout=10'
+      GIT_TERMINAL_PROMPT=0 timeout 20 git -c safe.directory="$HERE" ls-remote --exit-code "$REMOTE_NAME" "$REMOTE_REF" \
+      </dev/null 2>/dev/null | cut -f1; exit "${PIPESTATUS[0]}")"
+    LS_STATUS=$?
+    if [ "$LS_STATUS" = 2 ] && [ "$HAS_UPSTREAM" = 1 ]; then
+      fail "GitHub no longer has the branch $REMOTE_BRANCH (merged?). Switch to main: git checkout main && git pull"
+    elif [ "$LS_STATUS" = 2 ]; then
+      warn "$BRANCH isn't on GitHub (never pushed?), so no tested image exists for it and it can't tell whether it's current. Use the branch it was made from: git checkout <branch> && git pull"
+    elif [ -z "$REMOTE_SHA" ]; then
+      warn "couldn't ask GitHub for the newest $REMOTE_BRANCH (offline?); checking $REV as it is"
+    elif [ "$REMOTE_SHA" = "$HEAD_SHA" ]; then SYNC=current
+    elif g merge-base --is-ancestor "$REMOTE_SHA" HEAD 2>/dev/null; then SYNC=ahead
+    else SYNC=behind
     fi
   fi
 fi
+# Your settings live in .env and config.yaml, which git ignores. A changed tracked file (say, a
+# docker-compose.yml still naming an old self-built image) isn't the tested setup, and it can make
+# git pull refuse to update. Compared with GitHub's commit when local commits sit on top of it, so
+# a committed change counts too. A path that isn't in that commit (added, or a rename's new name)
+# can't be checked out from it, so it is untracked instead; the file stays on disk.
+FROM="HEAD"; FROM_SHA="HEAD"
+[ "$SYNC" = ahead ] && { FROM="${REMOTE_SHA:0:7}"; FROM_SHA="$REMOTE_SHA"; }
+CHANGED=(); RESTORE=(); UNTRACK=()
 if [ -n "$HEAD_SHA" ]; then
-  # Your settings live in .env and config.yaml, which git ignores. A changed tracked file (say, a
-  # docker-compose.yml still naming an old self-built image) isn't the tested setup, and it can
-  # make git pull refuse to update.
-  CHANGED="$(g --no-optional-locks status --porcelain --untracked-files=no 2>/dev/null | cut -c4-)"
-  if [ -n "$CHANGED" ]; then
-    fail "files changed on this machine, so this isn't the tested setup (settings belong in .env and config.yaml):"
-    while read -r f; do info "$f"; done <<<"$CHANGED"
-    info "see the changes: git diff      put the files back: git checkout HEAD -- ${CHANGED//$'\n'/ }"
+  # `git diff` rewrites the index it reads to refresh it, even with --no-optional-locks (under sudo
+  # that makes .git/index root's, and git pull then fails), so it reads a copy.
+  INDEX_COPY="$(mktemp)"; trap 'rm -f "$INDEX_COPY" "$INDEX_COPY.lock"' EXIT
+  if cp -- "$(g rev-parse --git-path index 2>/dev/null)" "$INDEX_COPY" 2>/dev/null; then
+    while IFS= read -r -d '' st && IFS= read -r -d '' path; do
+      CHANGED+=("$path")
+      if [ "$st" = A ]; then UNTRACK+=("$path"); else RESTORE+=("$path"); fi
+    done < <(GIT_INDEX_FILE="$INDEX_COPY" g --no-optional-locks diff --no-renames --name-status -z "$FROM_SHA" -- 2>/dev/null)
+  else
+    warn "couldn't read git's index, so it can't tell whether files were changed on this machine"
   fi
+fi
+changed_files() {
+  local q="" how=""
+  for f in "${CHANGED[@]}"; do info "$f"; done
+  if [ "${#RESTORE[@]}" -gt 0 ]; then printf -v q ' %q' "${RESTORE[@]}"; how="git checkout $FROM --$q"; fi
+  if [ "${#UNTRACK[@]}" -gt 0 ]; then printf -v q ' %q' "${UNTRACK[@]}"; how="${how:+$how && }git reset -q $FROM --$q"; fi
+  info "see the changes: git diff $FROM      put the files back: $how"
+}
+case "$SYNC" in
+  current) ok "up to date with GitHub ($REV)";;
+  ahead)
+    if [ "${#CHANGED[@]}" = 0 ]; then ok "ahead of GitHub (local commits on top of $FROM)"
+    else
+      fail "ahead of GitHub (local commits on top of $FROM), and these files differ from GitHub's, so this isn't the tested setup (settings belong in .env and config.yaml):"
+      changed_files
+    fi;;
+  behind)
+    if [ "${#CHANGED[@]}" = 0 ]; then
+      fail "out of date: GitHub has ${REMOTE_SHA:0:7}, this is $REV. Run: git pull   then run this check again"
+    else
+      fail "out of date: GitHub has ${REMOTE_SHA:0:7}, this is $REV. First put back the files changed on this machine (below; don't stash or commit them), then: git pull   then run this check again"
+    fi
+    # Compare numeric ids: a checkout owner with no passwd entry would make `find ! -user` fail.
+    OWNER_ID="$(stat -c %u . 2>/dev/null || true)"
+    if [ -n "$OWNER_ID" ] && find .git ! -uid "$OWNER_ID" -print -quit 2>/dev/null | grep -q .; then
+      OWNER="$(stat -c %U: . 2>/dev/null || true)"
+      case "$OWNER" in ""|UNKNOWN:) OWNER="$(stat -c %u:%g .)";; esac
+      info "some files in .git belong to another user (from a git command run with sudo), which makes git pull fail."
+      info "Fix: sudo chown -R $OWNER .git   then git pull (without sudo)"
+    fi;;
+esac
+if [ "$SYNC" != ahead ] && [ "${#CHANGED[@]}" -gt 0 ]; then
+  fail "files changed on this machine, so this isn't the tested setup (settings belong in .env and config.yaml):"
+  changed_files
 fi
 
 # --- Machine ------------------------------------------------------------------------------------
@@ -93,8 +146,15 @@ if ! command -v python3 >/dev/null || ! python3 -c 'import sys; sys.exit(sys.ver
   echo; echo "Fix the ✗ items first."; exit 1
 fi
 ok "$(python3 --version)"
-if [ "$(id -u)" = "1000" ]; then ok "you are uid 1000 (matches the containers)"
-else warn "you are uid $(id -u); the containers run as 1000, so: sudo chown -R 1000:1000 data ntfy"; fi
+# Run with sudo (to read the Tailscale mappings), the commands it prints are still typed by you,
+# so the uid and docker checks are about you, not root.
+ROOT=0; [ "$(id -u)" = 0 ] && ROOT=1
+ME_UID="$(id -u)"; ME="$(id -un)"; VIA_SUDO=0
+if [ "$ROOT" = 1 ] && [ -n "${SUDO_USER:-}" ] && [ -n "${SUDO_UID:-}" ] && [ "$SUDO_UID" != 0 ]; then
+  ME_UID="$SUDO_UID"; ME="$SUDO_USER"; VIA_SUDO=1
+fi
+if [ "$ME_UID" = "1000" ]; then ok "you are uid 1000 (matches the containers)"
+else warn "you are uid $ME_UID; the containers run as 1000, so: sudo chown -R 1000:1000 data ntfy"; fi
 
 if ! PORTS="$(pit ports --env .env "$@")"; then
   echo; echo "Fix the error above first."; exit 1
@@ -110,9 +170,16 @@ if ! command -v docker >/dev/null; then
 else
   ok "$(docker --version)"
   # DOCKER is what this script runs (never prompts: sudo -n); D is what it tells you to type.
-  if docker info >/dev/null 2>&1; then DOCKER="docker"; D="docker"; ok "daemon reachable"
-  elif sudo -n docker info >/dev/null 2>&1; then DOCKER="sudo -n docker"; D="sudo docker"; ok "daemon reachable with sudo: put sudo in front of every docker command"
-  else warn "couldn't reach the Docker daemon as $(id -un). Use sudo for docker commands, or: sudo usermod -aG docker $(id -un) and log in again"
+  if docker info >/dev/null 2>&1; then DOCKER="docker"
+  elif sudo -n docker info >/dev/null 2>&1; then DOCKER="sudo -n docker"; fi
+  if [ "$DOCKER" = docker ] && { [ "$VIA_SUDO" = 0 ] || sudo -n -u "$ME" docker info >/dev/null 2>&1; }; then
+    D="docker"; ok "daemon reachable"
+  elif [ -n "$DOCKER" ]; then
+    D="sudo docker"; ok "daemon reachable with sudo: put sudo in front of every docker command"
+  elif [ "$ROOT" = 1 ]; then
+    D="sudo docker"; warn "couldn't reach the Docker daemon, even as root. Is it running? sudo systemctl status docker"
+  else
+    D="sudo docker"; warn "couldn't reach the Docker daemon as $ME. Use sudo for docker commands, or: sudo usermod -aG docker $ME and log in again"
   fi
   if [ -n "$DOCKER" ]; then
     SERVER_ARCH="$($DOCKER version --format '{{.Server.Arch}}' 2>/dev/null)"
@@ -135,9 +202,10 @@ for url in https://ghcr.io/v2/ https://pkg-containers.githubusercontent.com/ \
     *) fail "cannot reach ${url#https://} (HTTP '${code:-none}'): this network blocks image downloads";;
   esac
 done
-# The image tag that matches this checkout: its branch, or its exact commit when not on a branch.
+# The image tag that matches this checkout: the GitHub branch it follows (or its own name), or its
+# exact commit when not on a branch.
 SUGGESTED_TAG="main"
-if [ -n "$BRANCH" ]; then SUGGESTED_TAG="$(pit branch-tag "$BRANCH" 2>/dev/null || echo main)"
+if [ -n "$TAG_BRANCH" ]; then SUGGESTED_TAG="$(pit branch-tag "$TAG_BRANCH" 2>/dev/null || echo main)"
 elif [ -n "$REV" ]; then SUGGESTED_TAG="sha-$REV"; fi
 if [ -f .env ]; then
   TAG="$(pit env-get --env .env RINGHUB_TAG)"
@@ -154,7 +222,7 @@ if [ -z "$ARCH" ]; then
 else
   REFS="$(pit compose-images --env .env --tag "$TAG")"
   if ! grep -q '^ghcr\.io/waymarklabs-official/pebble-custom:' <<<"$REFS"; then
-    fail "docker-compose.yml doesn't run the published ringhub image (it names $(head -1 <<<"$REFS")). Put it back: git checkout HEAD -- docker-compose.yml"
+    fail "docker-compose.yml doesn't run the published ringhub image (it names $(head -1 <<<"$REFS")). Put it back: git checkout $FROM -- docker-compose.yml"
   fi
   while read -r ref; do
     [ -n "$ref" ] || continue
@@ -202,6 +270,12 @@ if ! command -v tailscale >/dev/null; then fail "tailscale not installed"; else
           fi;;
       esac
     done
+  elif [ "$ROOT" = 1 ]; then
+    fail "couldn't read tailscale serve status, even as root. Is tailscaled running? sudo tailscale status"
+  elif [ -f .env ]; then
+    # The ports in .env are what the phone, the ring and ntfy already use: unchecked, they could
+    # clash, so this can't say "Ready".
+    fail "couldn't read tailscale serve status, so the ports in .env weren't checked against your tailnet. Run it with sudo: sudo bash deploy/pi/preflight.sh"
   else
     warn "couldn't read tailscale serve status; run this again with sudo to check the tailnet ports"
   fi

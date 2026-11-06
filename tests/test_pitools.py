@@ -190,12 +190,21 @@ LISTEN 0      4096               *:8444             *:*
 LISTEN 0      4096            [::]:9000          [::]:*
 LISTEN 0      4096   100.75.135.17:9001       0.0.0.0:*
 LISTEN 0      4096   [fe80::1%eth0]:9002        [::]:*
+LISTEN 0      128       0.0.0.0%lo:9112       0.0.0.0:*
+LISTEN 0      4096       [::1]%lo:9109          [::]:*
+LISTEN 0      4096   [::ffff:127.0.0.1]:9106       *:*
+LISTEN 0      4096            *%lo:9111             *:*
+LISTEN 0      4096   [::ffff:192.168.1.9]:9107     *:*
+LISTEN 0      4096   [fe80::1]%eth0:9108        [::]:*
 """
 
 
 @pytest.mark.parametrize(("port", "expect"), [
     (8787, []), (8446, []), (8445, []),                          # loopback only: Serve hides nothing
+    # ss puts an interface suffix after the brackets; bound to lo (even 0.0.0.0) or IPv4-mapped loopback
+    (9112, []), (9109, []), (9106, []), (9111, []),
     (8444, ["*:8444"]), (9000, ["[::]:9000"]), (9001, ["100.75.135.17:9001"]), (9002, ["[fe80::1%eth0]:9002"]),
+    (9107, ["[::ffff:192.168.1.9]:9107"]), (9108, ["[fe80::1]%eth0:9108"]),
     (1234, []),
 ])
 def test_listeners_ignore_loopback_only_sockets(port: int, expect: list[str]) -> None:
