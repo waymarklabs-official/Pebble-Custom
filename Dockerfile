@@ -3,6 +3,8 @@
 # No system packages are needed by default; TV control over ADB is opt-in:
 #   docker build --build-arg WITH_ADB=1 .
 FROM python:3.12-slim-bookworm AS build
+# Patient downloads: a Pi on busy Wi-Fi (or sharing bandwidth with a stream) can be slow.
+ENV PIP_DEFAULT_TIMEOUT=120 PIP_RETRIES=10 PIP_DISABLE_PIP_VERSION_CHECK=1
 WORKDIR /src
 COPY pyproject.toml README.md ./
 COPY src ./src
