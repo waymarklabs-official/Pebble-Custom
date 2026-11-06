@@ -5,7 +5,7 @@
 Hold the ring and talk. ringhub saves the thought, schedules the reminder, or answers the
 question, and knows where you were when you said it. Click it and it does the one obvious thing
 for where you are: log your meds in the morning, open the trunk when you're standing at the car,
-raise your hand at work. Build your own skills and modes in a dashboard on your phone.
+bookmark a moment in a meeting. Build your own skills and modes in a dashboard on your phone.
 
 ```
  ring ─▶ Index app ─signed webhook─▶ ringhub ─▶ ntfy push (phone + Pebble watch)
@@ -28,7 +28,7 @@ raise your hand at work. Build your own skills and modes in a dashboard on your 
 | *hold:* "where did I park?" | 🚗 Saved automatically when the car's Bluetooth disconnected, with a Maps link. |
 | *click, at home before 10:30* | 💊 Took meds ✓ (Morning mode) |
 | *click, just left home* | 🚗 Unlocked and you're at it → trunk opens. Locked or asleep → climate on. |
-| *click, at work* | ✋ Hand raise to your ntfy topic. |
+| *click, at work* | 📍 Bookmarks the moment, silently (Work mode is quiet). Double: what's next. |
 | *triple* | 🧭 "Morning — at home, 05:00–10:30 · click: Took meds · double: What's on my list". Triple again to switch. |
 | *double, right after a mis-heard capture* (or say "scratch that") | ↩️ Undone. |
 

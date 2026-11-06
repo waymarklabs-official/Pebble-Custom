@@ -103,6 +103,11 @@ async def list_(p: NoParams, rt: Runtime, v: Vars) -> None:
     await _say(rt, v, await rt.memory.list_summary(), "normal")
 
 
+@action("memory.next", NoParams)
+async def next_(p: NoParams, rt: Runtime, v: Vars) -> None:
+    await _say(rt, v, await rt.memory.next_summary(), "normal")
+
+
 class RecallParams(Params):
     count: int = Field(3, ge=1, le=10)
     query: str | None = None

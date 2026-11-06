@@ -19,7 +19,7 @@ TV control stays available as a skill template but is no longer what the product
 | Term | Meaning |
 |---|---|
 | **Gesture** | `click`, `double-click`, `triple-click` (instant) and `hold`, `click-hold` (voice). |
-| **Skill** | Something the ring can do: "Mark this moment", "Hand raise", "Car: trunk or climate". Built from a template (a form) or as custom steps. Can have voice phrases. |
+| **Skill** | Something the ring can do: "Mark this moment", "Took meds ✓", "Car: trunk or climate". Built from a template (a form) or as custom steps. Can have voice phrases. |
 | **Mode** | A named set of gesture→skill bindings plus *when it applies* (places, Focus, time, days, context). The first matching mode in priority order is active. |
 | **Place** | A named location (`home`, `work`, `car`, `gym`) with spoken aliases. The phone reports arriving at and leaving it. |
 | **Context** | Live facts: `place`, `focus`, `location` and free-form keys, with a timeline. |
@@ -29,7 +29,7 @@ TV control stays available as a skill template but is no longer what the product
 These never change unless you rebind them:
 
 - **hold** is *smart capture*. Just talk:
-  - Commands ("hand raise", "warm up the car") run the skill whose phrase matches.
+  - Commands ("took my meds", "warm up the car") run the skill whose phrase matches.
   - Questions ("where did I park", "what's on my list", "did I take my meds", "what did I say
     about the dentist") get an answer as a push.
   - Reminders ("remind me at 7 to…", "when I get home…", "when I leave work…") are scheduled.
@@ -100,8 +100,8 @@ plus its **params** generate the steps server-side, so the dashboard edits a for
 runs plain steps. The `custom` template exposes raw steps (JSON) for power users.
 
 Built-in templates: `moment`, `note` (fixed text log, e.g. "Took meds ✓"), `list` (push open
-reminders), `recall` (push recent notes), `notify` (push to an ntfy topic, used for hand raise
-and bathroom requests), `webhook`, `car_smart`, `car_command`, `tv` (optional), `custom`.
+reminders), `next` (push the next timed reminder), `recall` (push recent notes), `notify` (push to
+any ntfy topic), `webhook`, `car_smart`, `car_command`, `tv` (optional), `custom`.
 
 Built-in skills that can't be deleted (they back the default grammar): `capture`, `journal`,
 `where_am_i`, `nothing`.

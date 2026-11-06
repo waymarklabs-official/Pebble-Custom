@@ -85,10 +85,9 @@ Voice phrases on the built-in car skills: "warm up the car", "open the frunk". A
 
 ## Work & household
 
-### Hand raise and bathroom requests
-Your existing ntfy flows, as skills with the *Send a push* template, targeting the topics your
-subscribers already listen to. Bound to click/double in **Work** by default. Say "hand raise"
-from any mode.
+### Quiet meetings
+**Work** is a quiet mode by default: click silently bookmarks the moment ("Moment at Work", found
+later under Memory), double pushes what's next. Hold still captures, with silent confirmations.
 
 ### Running late, from any mode
 

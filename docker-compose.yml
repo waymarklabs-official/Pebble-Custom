@@ -1,15 +1,54 @@
+# ringhub + its own private ntfy server. Runs as-is on a Raspberry Pi 4/5 (arm64) or a mini PC.
+#
+# Both services listen on 127.0.0.1 only; `tailscale serve` publishes them to your tailnet over
+# HTTPS (see docs/PI.md). Nothing is exposed to your LAN or the internet.
+#
+#   cp .env.example .env   # fill it in
+#   docker compose up -d --build
+#   docker compose exec ntfy ntfy user add --role=admin me   # first run only, see docs/PI.md
+
 services:
   ringhub:
     build: .
     image: ringhub:latest
     restart: unless-stopped
-    env_file: .env                     # RINGHUB_SECRET, NTFY_TOKEN, RINGHUB_ADMIN_TOKEN, ...
+    init: true
+    env_file: .env
+    environment:
+      NTFY_URL: http://ntfy:80          # talk to ntfy inside the compose network
     ports:
-      - "127.0.0.1:8787:8787"          # expose through Tailscale Funnel / Caddy, not raw to the LAN
+      - "127.0.0.1:8787:8787"
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./data:/app/data
-      - adb-keys:/home/ringhub/.android
+    depends_on:
+      - ntfy
+    mem_limit: 256m
+
+  ntfy:
+    image: binwiederhier/ntfy:v2.37.2
+    command: serve
+    restart: unless-stopped
+    init: true
+    environment:
+      # Must be exactly the URL your iPhone's ntfy app uses (it's hashed into the iOS push relay).
+      NTFY_BASE_URL: ${NTFY_PUBLIC_URL:?set NTFY_PUBLIC_URL in .env}
+      # Instant iPhone delivery: ntfy.sh relays a content-free "poll" wake-up through Apple's push
+      # service; the phone then fetches the actual message from this server over Tailscale.
+      NTFY_UPSTREAM_BASE_URL: https://ntfy.sh
+      NTFY_BEHIND_PROXY: "true"
+      NTFY_CACHE_FILE: /var/cache/ntfy/cache.db
+      NTFY_CACHE_DURATION: 72h
+      NTFY_AUTH_FILE: /var/lib/ntfy/user.db
+      NTFY_AUTH_DEFAULT_ACCESS: deny-all
+      TZ: ${TZ:-UTC}
+    ports:
+      - "127.0.0.1:2586:80"
+    volumes:
+      - ntfy-cache:/var/cache/ntfy
+      - ntfy-auth:/var/lib/ntfy
+    mem_limit: 128m
 
 volumes:
-  adb-keys:
+  ntfy-cache:
+  ntfy-auth:

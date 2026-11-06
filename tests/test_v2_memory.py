@@ -70,7 +70,7 @@ async def test_plain_speech_is_saved_as_a_note_under_the_current_place(rt: Runti
     assert (note.kind, note.text, note.place, note.mode) == ("note", "The parking garage code is 4417", "work", "work")
     push = ntfy.last()
     assert push["message"] == "📝 The parking garage code is 4417 · Work"
-    assert push["topic"] == "ring" and push["priority"] == 3
+    assert push["topic"] == "ring" and push["priority"] == 2  # Work is a quiet mode
     assert await rt.store.get(ATTENTION_CAPTURE) == {"kind": "capture", "ref": {"note": note.id},
                                                  "at": pytest.approx(time.time(), abs=5)}
     assert await rt.reminders.open() == []
@@ -152,11 +152,10 @@ async def test_empty_capture_is_reported_loudly(rt: Runtime, engine: Engine, ntf
 
 
 async def test_skill_phrase_runs_the_skill_instead_of_saving(rt: Runtime, engine: Engine, ntfy: NtfyMock) -> None:
-    await hold(engine, "Hey, raise my hand please")
-    pushed = {b["topic"]: b for b in ntfy.bodies}
-    assert pushed["hand-raise"]["message"] == "✋ Hand raised" and pushed["hand-raise"]["priority"] == 4
-    assert pushed["ring"]["message"] == "✋ Hand raise"  # the confirmation
-    assert await rt.notes.recent(5) == []
+    await hold(engine, "Hey, I took my meds please")
+    [logged] = await rt.notes.recent(5)
+    assert (logged.kind, logged.text) == ("log", "Took meds ✓")  # the skill ran; nothing saved as a note
+    assert ntfy.last()["message"] == "✔ Took meds ✓"
 
 
 async def test_phrase_slots_reach_the_skill_templates(rt: Runtime, engine: Engine, ntfy: NtfyMock) -> None:

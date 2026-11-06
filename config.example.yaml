@@ -21,9 +21,9 @@ ring:
   keep_audio: true                   # keep voice recordings (data/audio) when the app sends them
 
 ntfy:                                # how the hub talks back: confirmations, answers, reminders
-  url: https://ntfy.sh               # or your own server (set upstream-base-url for timely iOS pushes)
-  topic: ${NTFY_TOPIC}               # pick something unguessable
-  token: ${NTFY_TOKEN:-}
+  url: ${NTFY_URL:-http://127.0.0.1:2586}  # the ring's own ntfy (docker compose sets http://ntfy:80)
+  topic: ${NTFY_TOPIC:-ring}
+  token: ${NTFY_TOKEN:-}             # from `ntfy token add` (docs/PI.md)
 
 memory:
   ack_window_seconds: 120            # after a reminder fires: click = done, double = snooze

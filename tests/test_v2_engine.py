@@ -131,8 +131,8 @@ async def test_unbound_voice_is_never_dropped(rt: Runtime, engine: Engine) -> No
 async def test_mode_binding_overrides_fallback_and_feedback_is_capped(rt: Runtime, engine: Engine,
                                                                       ntfy: NtfyMock) -> None:
     await rt.context.arrive("work", at=time.time() - 600)
-    assert await engine.handle(ring_event("click")) == "hand_raise"
-    assert ntfy.find("Hand raised")["topic"] == "hand-raise"
+    assert await engine.handle(ring_event("double-click")) == "next"  # Work binds double to "What's next"
+    assert ntfy.last()["priority"] == 2  # Work is a quiet mode
     await rt.context.arrive("car", at=time.time())
     ntfy.reset()
     assert await engine.handle(ring_event("double-click")) == "list"  # "In the car" mode is quiet
@@ -291,7 +291,7 @@ async def test_combo_prefix_alone_fires_after_the_window(rt: Runtime, running: E
 
 async def test_combo_bound_only_in_another_mode_still_resolves_against_active_mode(rt: Runtime,
                                                                                   running: Engine) -> None:
-    await edit_mode(rt, "work", bindings={"click": "hand_raise", "double+click": "took_meds"})
+    await edit_mode(rt, "work", bindings={"click": "moment", "double+click": "took_meds"})
     # not at work: the combo exists (so double waits), but the active mode doesn't bind it
     await running.submit(ring_event(Gesture.DOUBLE_CLICK))
     await running.submit(ring_event(Gesture.CLICK))

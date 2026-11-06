@@ -340,7 +340,8 @@ def test_now_describes_mode_and_gestures(client: TestClient) -> None:
     assert now["mode"]["id"] == "work" and now["reason"] == "at work" and now["manual"] is False
     g = {x["key"]: x for x in now["gestures"]}
     assert list(g) == ["click", "double-click", "triple-click", "single-click-hold", "double-click-hold"]
-    assert g["click"]["skill"]["id"] == "hand_raise" and g["click"]["inherited"] is False
+    assert g["click"]["skill"]["id"] == "moment" and g["click"]["inherited"] is False
+    assert g["double-click"]["skill"]["id"] == "next"
     assert g["single-click-hold"]["skill"]["id"] == "capture" and g["single-click-hold"]["inherited"] is True
     assert now["context"]["place"] == "work"
     assert now["features"] == {"tesla": False, "ntfy": True, "llm": False, "tv": False, "links": True}
