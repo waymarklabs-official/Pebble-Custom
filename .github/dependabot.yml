@@ -1,0 +1,22 @@
+# Weekly update proposals for everything pinned by digest or commit. Each one runs the full CI
+# (tests + end-to-end test of the arm64 image) before it can be merged.
+#
+# Not covered here, bump by hand: the QEMU/BuildKit images in .github/workflows/ci.yml, and the
+# Python lock files (bash deploy/ci/lock.sh --upgrade).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+  - package-ecosystem: docker            # the base image in Dockerfile
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker-compose    # the pinned ntfy and Tesla proxy images in docker-compose.yml
+    directory: /
+    schedule:
+      interval: weekly

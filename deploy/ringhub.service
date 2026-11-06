@@ -1,0 +1,33 @@
+# Bare-metal install (Pi or any Linux box):
+#   sudo useradd --system --create-home --home-dir /opt/ringhub ringhub
+#   sudo -u ringhub python3 -m venv /opt/ringhub/venv
+#   sudo -u ringhub /opt/ringhub/venv/bin/pip install '/path/to/Pebble-Custom[llm]'
+#   sudo cp config.yaml /opt/ringhub/ && sudo cp deploy/ringhub.service /etc/systemd/system/
+#   sudo install -m 600 -o ringhub /dev/null /opt/ringhub/.env   # then add secrets
+#   sudo systemctl enable --now ringhub
+[Unit]
+Description=ringhub - Pebble Index ring automation hub
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=ringhub
+WorkingDirectory=/opt/ringhub
+EnvironmentFile=/opt/ringhub/.env
+ExecStart=/opt/ringhub/venv/bin/ringhub serve -c /opt/ringhub/config.yaml
+Restart=on-failure
+RestartSec=3
+# Hardening: the hub only needs the network and its own directory.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/ringhub
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

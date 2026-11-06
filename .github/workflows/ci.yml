@@ -1,0 +1,210 @@
+name: ci
+
+# Every push and pull request: lint, type-check and test against the hash-locked dependencies.
+# Then build the Raspberry Pi (arm64) image and run the whole production stack end to end under
+# emulation (deploy/ci/e2e.sh). Only after that, and only for pushes to this repository, publish
+# amd64 + arm64 to GHCR. Pull requests build but never publish.
+#
+# Published image: ghcr.io/waymarklabs-official/pebble-custom
+#   :sha-<7 chars>   one exact commit. Immutable: never rebuilt or overwritten once published.
+#   :<x.y.z>         release tag v<x.y.z>. Immutable.
+#   :main            newest commit on the default branch    } moved only by a run for the commit
+#   :<branch>        newest commit on a branch (/ becomes -) } that is still the branch's head
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*.*.*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Runs for the same ref never overlap (pushes queue, pull requests cancel), so a branch tag is
+# always decided by one run at a time.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE: ghcr.io/waymarklabs-official/pebble-custom
+
+jobs:
+  test:
+    name: test (python ${{ matrix.python }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - name: Install (hash-locked, wheels only; the same versions the image ships)
+        run: |
+          python -m pip install --require-hashes --only-binary=:all: -r requirements-dev.txt -r requirements-build.txt
+          python -m pip install --no-deps --no-build-isolation --no-index .
+          python -m pip check
+      - name: Lint
+        run: ruff check src tests
+      - name: Type-check
+        run: mypy src
+      - name: Test
+        run: pytest -q
+
+  image:
+    name: image (linux/amd64 + linux/arm64)
+    needs: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up QEMU (arm64 emulation)
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          image: docker.io/tonistiigi/binfmt:qemu-v10.2.3@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+          platforms: arm64
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          driver-opts: image=moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
+
+      - name: Build arm64 (what a Raspberry Pi runs)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/arm64
+          load: true
+          tags: ringhub:e2e-arm64
+          cache-from: type=gha,scope=ringhub
+          cache-to: type=gha,scope=ringhub,mode=max
+
+      - name: End-to-end test of the arm64 image with the production compose stack
+        run: |
+          test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' ringhub:e2e-arm64)" = linux/arm64
+          test "$(docker image inspect --format '{{.Config.User}}' ringhub:e2e-arm64)" = ringhub   # never root
+          bash deploy/ci/e2e.sh ringhub:e2e-arm64
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Decide which tags to publish
+        id: tags
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          short="${GITHUB_SHA::7}"
+          exists() {  # 0 = published, 1 = not found; anything else stops the job (never guess "absent")
+            local err
+            if err="$(docker buildx imagetools inspect "$IMAGE:$1" 2>&1 >/dev/null)"; then return 0; fi
+            if grep -qi 'not found' <<<"$err"; then return 1; fi
+            echo "::error::could not check whether $IMAGE:$1 exists: $err"; exit 1
+          }
+          new=()      # immutable tags that don't exist yet
+          moving=()   # tags that follow a branch
+          reuse=false
+          if exists "sha-$short"; then
+            echo "::notice::sha-$short is already published and is never overwritten; reusing it"
+            reuse=true
+          else
+            new+=("sha-$short")
+          fi
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            version="${GITHUB_REF_NAME#v}"
+            if exists "$version"; then echo "::notice::$version is already published; left as it is"
+            else new+=("$version"); fi
+          else
+            head="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$GITHUB_REF_NAME" --jq .object.sha)"
+            if [ "$head" = "$GITHUB_SHA" ]; then
+              moving+=("$(PYTHONPATH=src python3 -m ringhub.pitools branch-tag "$GITHUB_REF_NAME")")
+            else
+              echo "::notice::$GITHUB_REF_NAME has moved on to ${head::7}; its tag stays there, not on $short"
+            fi
+          fi
+          refs() { for t in "$@"; do echo "$IMAGE:$t"; done; }
+          {
+            echo "reuse=$reuse"
+            echo "existing=$IMAGE:sha-$short"
+            echo "build<<EOF"; refs ${new[@]+"${new[@]}"} ${moving[@]+"${moving[@]}"}; echo "EOF"
+            # If the build is reused, these tags are pointed at it instead (sha-* is never in "new" then).
+            echo "retag<<EOF"; refs ${new[@]+"${new[@]}"} ${moving[@]+"${moving[@]}"}; echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: OCI labels and annotations
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          # Only the labels/annotations are used; the tags come from the step above.
+          tags: type=sha,prefix=sha-,format=short
+          flavor: latest=false
+
+      - name: Build (and publish) amd64 + arm64
+        id: build
+        if: github.event_name == 'pull_request' || steps.tags.outputs.reuse == 'false'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.tags.outputs.build }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=ringhub
+          cache-to: type=gha,scope=ringhub,mode=max
+
+      - name: Point the new tags at the already-published build
+        if: github.event_name != 'pull_request' && steps.tags.outputs.reuse == 'true' && steps.tags.outputs.retag != ''
+        env:
+          EXISTING: ${{ steps.tags.outputs.existing }}
+          RETAG: ${{ steps.tags.outputs.retag }}
+        run: |
+          set -euo pipefail
+          args=(); while read -r ref; do if [ -n "$ref" ]; then args+=(--tag "$ref"); fi; done <<<"$RETAG"
+          docker buildx imagetools create "${args[@]}" "$EXISTING"
+
+      - name: Summary
+        if: github.event_name != 'pull_request'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          BUILD: ${{ steps.tags.outputs.build }}
+          RETAG: ${{ steps.tags.outputs.retag }}
+          REUSE: ${{ steps.tags.outputs.reuse }}
+          EXISTING: ${{ steps.tags.outputs.existing }}
+        run: |
+          bullets() { while read -r ref; do if [ -n "$ref" ]; then echo "- \`$ref\`"; fi; done <<<"$1"; }
+          {
+            echo "### Published image"
+            if [ "$REUSE" = true ]; then
+              echo "Reused \`$EXISTING\` (already published, never overwritten)."
+              if [ -n "$RETAG" ]; then echo "Tags pointed at it:"; bullets "$RETAG"
+              else echo "No tags to add or move."; fi
+            else
+              echo "Digest \`${DIGEST:-none}\`, tags:"
+              bullets "$BUILD"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

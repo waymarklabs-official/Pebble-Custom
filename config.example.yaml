@@ -1,0 +1,51 @@
+# ringhub config: infrastructure only.
+#
+# Skills, modes and places live in the dashboard (http://<hub>:8787/). On first boot the hub
+# writes a sensible default set you can change: Sleep, In the car, Work, Heading out, Morning,
+# Home and Everywhere.
+#
+# Any value can reference an environment variable: ${NAME} or ${NAME:-fallback}.
+
+timezone: ${TZ:-UTC}                 # reminders and "tomorrow at 9" use this (set TZ in .env)
+
+server:
+  port: 8787
+  data_dir: ./data                   # SQLite (notes, reminders, catalog), audio, ADB keys
+  public_url: ${RINGHUB_PUBLIC_URL:-}  # how your phone reaches the hub, e.g. https://hub.tail1234.ts.net
+  admin_token: ${RINGHUB_ADMIN_TOKEN}  # dashboard login (`ringhub secret` makes one)
+  context_token: ${RINGHUB_CONTEXT_TOKEN}  # your phone's Shortcuts/OwnTracks use this; it can only report context
+
+ring:
+  secrets:
+    default: ${RINGHUB_SECRET}       # paste the same secret into each gesture's webhook in the Index app
+  keep_audio: true                   # keep voice recordings (data/audio) when the app sends them
+
+ntfy:                                # how the hub talks back: confirmations, answers, reminders
+  url: ${NTFY_URL:-http://127.0.0.1:2586}  # the ring's own ntfy (docker compose sets http://ntfy:2586)
+  topic: ${NTFY_TOPIC:-ring}
+  token: ${NTFY_TOKEN:-}
+  min_priority: ${NTFY_MIN_PRIORITY:-4}  # 4 = every push alerts (Time Sensitive); 1-2 are silent on iPhone
+
+memory:
+  ack_window_seconds: 120            # after a reminder fires: click = done, double = snooze
+  digest_time: "21:30"               # evening summary; remove to disable
+  # markdown_dir: /srv/obsidian/Ring # mirror every note into daily Markdown files
+
+tesla:                               # car control; off until TESLA_CLIENT_ID is set (docs/INTEGRATIONS.md)
+  client_id: ${TESLA_CLIENT_ID:-}
+  client_secret: ${TESLA_CLIENT_SECRET:-}
+  domain: ${TESLA_DOMAIN:-}          # the site that hosts your public key, e.g. you.github.io
+  ca_cert: ./data/tesla/tls-cert.pem # made by deploy/pi/tesla-keys.sh
+  public_key: ./data/tesla/public-key.pem
+  temperature_unit: F                # how temperatures are spoken; the car always takes Celsius
+
+google:                              # Google Calendar; off until GOOGLE_CLIENT_ID is set
+  client_id: ${GOOGLE_CLIENT_ID:-}
+  client_secret: ${GOOGLE_CLIENT_SECRET:-}
+  calendar_id: ${GOOGLE_CALENDAR_ID:-primary}
+
+# llm:                               # optional: understands reminders the built-in parser misses
+#   api_key: ${ANTHROPIC_API_KEY}
+
+# devices:                           # optional TV skills (Android/Fire TV via ADB, Roku via ECP)
+#   living_tv: {type: androidtv, host: 192.168.1.50, room: living}

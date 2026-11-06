@@ -1,0 +1,101 @@
+# ringhub + its own private ntfy server. Runs as-is on a Raspberry Pi 4/5 (arm64) or a mini PC.
+#
+# Production: both images are published, prebuilt and tested (ringhub by this repo's CI, for
+# arm64 and amd64); this machine only pulls them. Nothing is compiled or pip-installed here.
+#
+# Both services listen on 127.0.0.1 only. `tailscale serve` publishes them to your tailnet over
+# HTTPS on their own ports, so nothing else on the machine (e.g. Tstream) is touched.
+# Full walkthrough: docs/PI.md
+#
+#   bash deploy/pi/preflight.sh             # read-only; prints the exact commands for this machine
+#   mkdir -p data ntfy/cache ntfy/lib       # BEFORE the first `up` (else Docker creates them as root)
+#   PYTHONPATH=src python3 -m ringhub.envfile --host <pi>.<tailnet>.ts.net --tag <tag> --tz <Area/City> > .env
+#   docker compose pull && docker compose up -d && sudo bash deploy/pi/serve.sh
+#
+# Developing ringhub itself? Build from this checkout instead:
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "5m", max-file: "2" }    # keep SD-card writes small
+
+services:
+  ringhub:
+    # RINGHUB_TAG in .env: "main" follows the default branch, "<branch-name>" (slashes as dashes)
+    # follows a branch, "sha-<7 chars>" pins one exact, tested build.
+    image: ghcr.io/waymarklabs-official/pebble-custom:${RINGHUB_TAG:-main}
+    restart: unless-stopped
+    init: true
+    user: "1000:1000"
+    env_file: .env
+    environment:
+      NTFY_URL: http://ntfy:2586        # talk to ntfy inside the compose network
+    ports:
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./data:/app/data
+    depends_on:
+      ntfy:
+        condition: service_healthy
+    mem_limit: 256m
+    logging: *logging
+
+  ntfy:
+    # Pinned by version and digest (Dependabot proposes updates); read the release notes before bumping.
+    image: binwiederhier/ntfy:v2.37.2@sha256:1875ddcf815c8a3c981d6d78c67a93452d0abba79b1ab9520b1f5f5238902bd7
+    command: ["serve"]
+    restart: unless-stopped
+    init: true
+    user: "1000:1000"
+    environment:
+      # Must equal, character for character, the server URL typed into the iPhone ntfy app:
+      # the iOS push relay keys on a hash of it. A mismatch silently delivers nothing.
+      NTFY_BASE_URL: ${NTFY_PUBLIC_URL:?set NTFY_PUBLIC_URL in .env}
+      NTFY_LISTEN_HTTP: ":2586"
+      # Instant iPhone delivery: only a hash of the topic URL and the message id go to ntfy.sh,
+      # which wakes the phone through Apple; the phone then fetches the message from this server
+      # over Tailscale. Without it, iOS delivery can take hours.
+      NTFY_UPSTREAM_BASE_URL: https://ntfy.sh
+      NTFY_BEHIND_PROXY: "true"          # tailscale serve sets X-Forwarded-For
+      NTFY_CACHE_FILE: /var/cache/ntfy/cache.db
+      NTFY_CACHE_DURATION: 48h           # lets the phone catch up after Tailscale was off
+      NTFY_AUTH_FILE: /var/lib/ntfy/user.db
+      NTFY_AUTH_DEFAULT_ACCESS: deny-all
+      NTFY_WEB_ROOT: disable             # API + iPhone app only, no web UI
+      NTFY_ENABLE_LOGIN: "false"
+      NTFY_ENABLE_RESERVATIONS: "false"
+      TZ: ${TZ:-UTC}
+    ports:
+      - "127.0.0.1:2586:2586"
+    volumes:
+      - ./ntfy/cache:/var/cache/ntfy
+      - ./ntfy/lib:/var/lib/ntfy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -T 5 -O - http://localhost:2586/v1/health | grep -q '\"healthy\":true'"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+      start_interval: 3s                 # check quickly while starting, so ringhub isn't held up
+    mem_limit: 128m
+    logging: *logging
+
+  # Tesla's command-signing proxy (github.com/teslamotors/vehicle-command). A Model Y only accepts
+  # signed commands, and this signs them with data/tesla/private-key.pem. It's off until you start it:
+  #   bash deploy/pi/tesla-keys.sh && docker compose --profile tesla up -d
+  # No port is published: only ringhub reaches it, as https://tesla-proxy:4443.
+  tesla-proxy:
+    profiles: ["tesla"]
+    # Pinned by version and digest (Dependabot proposes updates).
+    image: tesla/vehicle-command:0.4.1@sha256:e8adac679bf5e72790c588e620bb4a7992a8f80d4c3bd98da6d1129f59daf482
+    command: ["-tls-key", "/config/tls-key.pem", "-cert", "/config/tls-cert.pem",
+              "-key-file", "/config/private-key.pem", "-host", "0.0.0.0", "-port", "4443"]
+    restart: unless-stopped
+    user: "1000:1000"
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - ./data/tesla:/config:ro
+    mem_limit: 64m
+    logging: *logging
