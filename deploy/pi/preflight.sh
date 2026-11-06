@@ -10,7 +10,12 @@ fail() { printf '  \033[31m✗\033[0m %s\n' "$*"; FAIL=1; }
 WARN=0; FAIL=0
 
 echo "Machine"
-ok "arch $(uname -m), $(nproc) CPU, $(awk '/MemTotal/ {printf "%.1f GB RAM", $2/1048576}' /proc/meminfo)"
+ARCH="$(uname -m)"
+case "$ARCH" in
+  aarch64|arm64|x86_64) ok "arch $ARCH, $(nproc) CPU, $(awk '/MemTotal/ {printf "%.1f GB RAM", $2/1048576}' /proc/meminfo)";;
+  *) fail "arch $ARCH: a 32-bit OS can't build the image. Use 64-bit Raspberry Pi OS (uname -m = aarch64).";;
+esac
+command -v python3 >/dev/null && ok "$(python3 --version)" || fail "python3 missing (needed once to generate .env)"
 [ "$(id -u)" = "1000" ] && ok "you are uid 1000 (matches the containers)" \
   || warn "you are uid $(id -u); the containers run as 1000 — chown data/ and ntfy/ to 1000:1000"
 
@@ -43,4 +48,6 @@ done
 
 echo
 if [ "$FAIL" = 1 ]; then echo "Fix the ✗ items first."; exit 1; fi
-echo "Ready. Next:  ringhub env --host ${HOST:-<name>} --ring-port $RING_PORT --ntfy-port $NTFY_PORT --tz <Zone/City> > .env"
+echo "Ready. Next (from ~/ringhub):"
+echo "  mkdir -p data ntfy/cache ntfy/lib"
+echo "  PYTHONPATH=src python3 -m ringhub.envfile --host ${HOST:-<name>} --ring-port $RING_PORT --ntfy-port $NTFY_PORT --tz America/New_York > .env"

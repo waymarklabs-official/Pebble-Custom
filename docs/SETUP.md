@@ -19,7 +19,7 @@ Any small always-on Linux box works: a Pi 4/5, a thin client, or a container on 
 
 ```bash
 pip install -e '.[llm]'                                          # Python 3.11+
-ringhub env --host <machine>.<tailnet>.ts.net --tz America/New_York > .env
+ringhub env --host <machine>.<tailnet>.ts.net --tz America/New_York > .env   # same as ringhub.envfile
 echo "NTFY_URL=https://ntfy.sh" >> .env                          # or your own ntfy server
 cp config.example.yaml config.yaml
 set -a; . ./.env; set +a

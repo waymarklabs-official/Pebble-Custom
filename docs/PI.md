@@ -39,18 +39,18 @@ them to every step below: `bash deploy/pi/preflight.sh 8445 8446`.
 In the Tailscale admin console (**DNS**), make sure **MagicDNS** and **HTTPS Certificates** are
 on. They probably already are if Tstream uses `https://…ts.net`.
 
-## 2. Build and configure
+## 2. Configure
 
 ```bash
 mkdir -p data ntfy/cache ntfy/lib            # must exist before the first start (else Docker makes them root-owned)
-docker build -t ringhub:latest .             # 3-5 min on a Pi
-docker run --rm ringhub:latest env --host pi.tail1234.ts.net --tz America/New_York > .env
+PYTHONPATH=src python3 -m ringhub.envfile --host pi.tail1234.ts.net --tz America/New_York > .env
 chmod 600 .env
 cp config.example.yaml config.yaml
 ```
 
-Replace `pi.tail1234.ts.net` with the name from step 1. `.env` now holds fresh secrets, a random
-ntfy topic and both URLs. The defaults in `config.yaml` are fine.
+Replace `pi.tail1234.ts.net` with the name from step 1. This uses the Pi's built-in Python, with
+nothing to install first. `.env` now holds fresh secrets, a random ntfy topic and both URLs. The
+defaults in `config.yaml` are fine.
 
 ## 3. Start ntfy and create its two accounts
 
@@ -67,10 +67,10 @@ docker compose exec ntfy ntfy access iphone 'ring-*' read-only
 The hub can only publish and your phone can only read. Nobody else can do either, because the
 server denies everything by default.
 
-## 4. Start ringhub and publish both to your tailnet
+## 4. Build and start ringhub, then publish both to your tailnet
 
 ```bash
-docker compose up -d
+docker compose up -d --build                                         # builds the ringhub image: 3-5 min on a Pi
 docker compose exec ringhub ringhub check -c /app/config.yaml        # everything should say "on"
 sudo bash deploy/pi/serve.sh                                         # adds :8443 and :8444 only
 ```
@@ -118,7 +118,7 @@ was asleep. Background details are in [SETUP.md](SETUP.md#4-tell-it-where-you-ar
 | Task | Command |
 |---|---|
 | Logs | `docker compose logs -f ringhub` (or `ntfy`) |
-| Update | `git pull && docker build -t ringhub:latest . && docker compose up -d` |
+| Update | `git pull && docker compose up -d --build` |
 | Back up | Copy `~/ringhub/data`, `~/ringhub/ntfy`, `.env` and `config.yaml` (or Dashboard → Setup → Backup for modes/skills) |
 | Stop serving | `sudo tailscale serve --https=8443 off` and `sudo tailscale serve --https=8444 off` |
 
@@ -145,6 +145,8 @@ in the ntfy app remove and re-add the server.
 | `https://…:8443` times out from the phone | `sudo tailscale serve status` should list 8443. If your tailnet uses custom ACLs, allow the phone TCP 8443 and 8444. |
 | The first request after setup takes a minute | Tailscale is issuing the HTTPS certificate. This happens once. |
 | `ntfy` won't start: permission denied | `data/` or `ntfy/` was created by Docker as root: `sudo chown -R 1000:1000 data ntfy`. |
+| Build fails compiling a package (`gcc`, `uvloop`, `pydantic-core`) | The Pi is on a 32-bit OS. `uname -m` must say `aarch64`; reinstall Raspberry Pi OS (64-bit). |
+| `pull access denied for ringhub` | The image wasn't built yet: run `docker compose up -d --build` from `~/ringhub`. |
 
 **Privacy note:** the ntfy.sh relay only ever sees a hash of your topic URL and a message ID,
 never the content. The Tailscale HTTPS certificate makes your machine name public in certificate

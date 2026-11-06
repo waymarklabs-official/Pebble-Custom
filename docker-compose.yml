@@ -5,7 +5,7 @@
 # is touched. Full walkthrough: docs/PI.md
 #
 #   mkdir -p data ntfy/cache ntfy/lib       # BEFORE the first `up` (else Docker creates them as root)
-#   ringhub env --host <pi>.<tailnet>.ts.net > .env    # or: docker run --rm ringhub:latest env ...
+#   PYTHONPATH=src python3 -m ringhub.envfile --host <pi>.<tailnet>.ts.net --tz <Zone/City> > .env
 #   docker compose up -d --build
 
 x-logging: &logging

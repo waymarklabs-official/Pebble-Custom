@@ -43,3 +43,19 @@ def test_env_port_443_omits_the_port(capsys: pytest.CaptureFixture[str]) -> None
 def test_env_rejects_bad_input(capsys: pytest.CaptureFixture[str], args: tuple[str, ...]) -> None:
     code, out, err = run(capsys, *args)
     assert code == 2 and out == "" and "error:" in err
+
+
+def test_envfile_runs_without_any_dependencies_installed() -> None:
+    """On a fresh Pi, .env is generated with the system Python before anything is built."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parents[1] / "src"
+    code = ("import sys; import ringhub.envfile as e; "
+            "heavy = [m for m in ('httpx', 'pydantic', 'fastapi', 'yaml', 'jinja2') if m in sys.modules]; "
+            "assert not heavy, heavy; sys.exit(e.main(['--host', 'pi.tail1234.ts.net']))")
+    r = subprocess.run([sys.executable, "-c", code], env={"PYTHONPATH": str(src)},
+                       capture_output=True, text=True, timeout=30, check=False)
+    assert r.returncode == 0, r.stderr
+    assert "NTFY_PUBLIC_URL=https://pi.tail1234.ts.net:8444" in r.stdout
