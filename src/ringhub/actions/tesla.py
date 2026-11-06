@@ -45,6 +45,36 @@ VIN_KEY = "tesla.vin"
 _P256_SPKI_PREFIX = bytes.fromhex("3059301306072a8648ce3d020106082a8648ce3d030107034200")
 
 
+# What Fleet API's status codes mean for you, in plain words (Tesla's own detail is appended).
+_STATUS_HINTS = {
+    401: "Tesla no longer accepts this sign-in: reconnect Tesla in Setup → Integrations",
+    402: "Tesla wants a payment method on your developer account (developer.tesla.com → your app → billing)",
+    403: "Tesla refused access: check that your app at developer.tesla.com has the Vehicle Information and "
+         "Vehicle Location scopes, then Reconnect",
+    404: "Tesla doesn't know that car on this account: pick the car again in Setup → Integrations",
+    412: "Tesla says your app isn't registered in your region yet: press Register in Setup → Integrations",
+    421: "Tesla says this account lives in another region",
+    429: "Tesla is limiting requests right now: try again in a minute",
+    451: "Tesla won't share this car's data (the account's privacy settings)",
+}
+
+
+def explain(where: str, resp: httpx.Response) -> ActionError:
+    """An ActionError that says what Tesla's answer means, with Tesla's own wording appended."""
+    try:
+        body = resp.json()
+    except ValueError:
+        body = None
+    detail = ""
+    if isinstance(body, dict):
+        detail = str(body.get("error_description") or body.get("error") or body.get("message") or "")
+    elif resp.text:
+        detail = resp.text
+    hint = _STATUS_HINTS.get(resp.status_code)
+    msg = f"tesla: {hint} (HTTP {resp.status_code})" if hint else f"tesla {where}: HTTP {resp.status_code}"
+    return ActionError(f"{msg}{' · Tesla says: ' + detail[:200] if detail else ''}")
+
+
 def public_key_hex(pem: str) -> str:
     """The uncompressed EC point (04||X||Y, hex) of a P-256 public key PEM, as Tesla reports it."""
     body = "".join(line for line in pem.strip().splitlines() if line and not line.startswith("-----"))
@@ -138,6 +168,11 @@ class TeslaClient:
             await self._store.set(REGION_KEY, region)
             self._access = str(data["access_token"])
             self._expires = time.time() + float(data.get("expires_in", 3600))
+        if not self._cfg.region:
+            try:
+                await self.detect_region()      # the code's prefix is a hint; Tesla's answer is the truth
+            except ActionError as e:
+                log.warning("tesla: region check after connecting failed: %s", e)
 
     async def disconnect(self) -> None:
         async with self._lock:
@@ -226,17 +261,50 @@ class TeslaClient:
     async def _read_base(self) -> str:
         return (self._cfg.read_url or await self.server()).rstrip("/")
 
-    async def _get(self, path: str, params: dict[str, str] | None = None) -> Any:
+    async def _get(self, path: str, params: dict[str, str] | None = None, *, _retried: bool = False) -> Any:
         headers = {"Authorization": f"Bearer {await self._token()}"}
+        base = await self._read_base()
         try:
-            resp = await self._http.get(f"{await self._read_base()}{path}", headers=headers, params=params)
+            resp = await self._http.get(f"{base}{path}", headers=headers, params=params)
         except httpx.HTTPError as e:
-            raise ActionError(f"tesla {path}: {e!r}") from None
+            host = base.split("//", 1)[-1]
+            raise ActionError(f"tesla: couldn't reach {host} from this machine ({e!r}); "
+                              "is it blocked on this network?") from None
         if resp.status_code == 408:
             raise ActionError("tesla: vehicle is asleep/unreachable")
+        if resp.status_code == 421 and not _retried and not self._cfg.read_url and not self._cfg.region:
+            # Wrong region: ask Tesla where this account lives, then try once more there.
+            await self.detect_region()
+            return await self._get(path, params, _retried=True)
         if resp.status_code >= 400:
-            raise ActionError(f"tesla {path}: HTTP {resp.status_code} {resp.text[:200]}")
+            raise explain(path, resp)
         return resp.json().get("response")
+
+    async def detect_region(self) -> str:
+        """Ask Tesla which region this account lives in (GET /api/1/users/region) and remember it.
+
+        Each regional server answers 421 for accounts that live elsewhere, so try the current guess
+        first, then the others. Any other refusal keeps the current guess.
+        """
+        current = await self.region()
+        headers = {"Authorization": f"Bearer {await self._token()}"}
+        for region in [current] + [r for r in SERVERS if r != current]:
+            try:
+                resp = await self._http.get(f"{SERVERS[region]}/api/1/users/region", headers=headers)
+            except httpx.HTTPError:
+                continue
+            if resp.status_code == 421:
+                continue
+            if resp.status_code >= 400:
+                log.info("tesla: couldn't ask for the account's region (HTTP %s); keeping %s",
+                         resp.status_code, current)
+                return current
+            info = (resp.json() or {}).get("response") or {}
+            found = str(info.get("region") or region).lower()
+            found = found if found in SERVERS else region
+            await self._store.set(REGION_KEY, found)
+            return found
+        return current
 
     async def vehicles(self) -> list[dict[str, Any]]:
         data = await self._get("/api/1/vehicles")
@@ -276,9 +344,11 @@ class TeslaClient:
         vin = await self._require_vin()
         headers = {"Authorization": f"Bearer {await self._token()}"}
         try:
-            await self._http.post(f"{await self._read_base()}/api/1/vehicles/{vin}/wake_up", headers=headers)
+            resp = await self._http.post(f"{await self._read_base()}/api/1/vehicles/{vin}/wake_up", headers=headers)
         except httpx.HTTPError as e:
             raise ActionError(f"tesla wake_up: {e!r}") from None
+        if resp.status_code >= 400 and resp.status_code != 408:
+            raise explain("wake_up", resp)
         deadline = time.monotonic() + self._cfg.wake_timeout_seconds
         while time.monotonic() < deadline:
             if await self.online_state() == "online":

@@ -168,12 +168,68 @@ async def test_exchange_code_learns_the_region_and_keeps_the_refresh_token(
     assert rt.tesla is not None and not await rt.tesla.connected()
     route = ntfy.router.post(TESLA_AUTH).mock(return_value=httpx.Response(200, json={
         "access_token": "a1", "refresh_token": "r1", "expires_in": 3600}))
+    ntfy.router.get(f"{SERVERS['eu']}/api/1/users/region").mock(return_value=httpx.Response(200, json={
+        "response": {"region": "eu", "fleet_api_base_url": SERVERS["eu"]}}))
     await rt.tesla.exchange_code("EU_abc123", "https://hub.test/oauth/tesla/callback")
     body = parse_qs(route.calls.last.request.content.decode())
     assert body["grant_type"] == ["authorization_code"] and body["client_secret"] == ["sekret"]
     assert body["audience"] == [SERVERS["eu"]] and body["code"] == ["EU_abc123"]
     assert await rt.store.get(REFRESH_KEY) == "r1" and await rt.store.get(REGION_KEY) == "eu"
     assert await rt.tesla.connected() and await rt.tesla.region() == "eu"
+
+
+async def test_region_comes_from_tesla_not_the_code_prefix(
+        make_runtime: Factory, make_config: Callable[..., Config], ntfy: NtfyMock) -> None:
+    rt: Runtime = await make_runtime(tesla_cfg(make_config, client_secret="s", refresh_token=None, read_url=None))
+    assert rt.tesla is not None
+    ntfy.router.post(TESLA_AUTH).mock(return_value=httpx.Response(200, json={
+        "access_token": "a1", "refresh_token": "r1", "expires_in": 3600}))
+    na = ntfy.router.get(f"{SERVERS['na']}/api/1/users/region").mock(return_value=httpx.Response(421, json={
+        "error": "user out of region"}))
+    eu = ntfy.router.get(f"{SERVERS['eu']}/api/1/users/region").mock(return_value=httpx.Response(200, json={
+        "response": {"region": "eu", "fleet_api_base_url": SERVERS["eu"]}}))
+    await rt.tesla.exchange_code("abc-without-prefix", "https://x/cb")
+    assert na.called and eu.called and await rt.tesla.region() == "eu"
+
+
+async def test_wrong_region_is_followed_once(
+        make_runtime: Factory, make_config: Callable[..., Config], ntfy: NtfyMock, fleet: Fleet) -> None:
+    rt: Runtime = await make_runtime(tesla_cfg(make_config, read_url=None))
+    assert rt.tesla is not None
+    ntfy.router.get(f"{SERVERS['na']}/api/1/vehicles/{TESLA_VIN}").mock(return_value=httpx.Response(421, json={
+        "error": "user out of region"}))
+    ntfy.router.get(f"{SERVERS['na']}/api/1/users/region").mock(return_value=httpx.Response(421))
+    ntfy.router.get(f"{SERVERS['eu']}/api/1/users/region").mock(return_value=httpx.Response(200, json={
+        "response": {"region": "eu"}}))
+    eu_car = ntfy.router.get(f"{SERVERS['eu']}/api/1/vehicles/{TESLA_VIN}").mock(return_value=state("asleep"))
+    assert await rt.tesla.online_state() == "asleep"
+    assert eu_car.called and await rt.tesla.region() == "eu"
+
+
+@pytest.mark.parametrize(("status", "body", "words"), [
+    (402, {"error": "payment required"}, "payment method on your developer account"),
+    (403, {"error": "unauthorized_missing_scopes"}, "Vehicle Information and Vehicle Location scopes"),
+    (404, {"error": "not_found"}, "pick the car again"),
+    (412, {"error": "Account must be registered in the current region"}, "press Register"),
+    (429, {}, "try again in a minute"),
+    (500, {"error": "internal"}, "HTTP 500"),
+])
+async def test_tesla_refusals_are_explained(rt: Runtime, fleet: Fleet, status: int, body: dict[str, Any],
+                                            words: str) -> None:
+    fleet.vehicle.mock(return_value=httpx.Response(status, json=body))
+    assert rt.tesla is not None
+    with pytest.raises(ActionError) as e:
+        await rt.tesla.online_state()
+    assert words in str(e.value)
+    if body.get("error"):
+        assert f"Tesla says: {body['error']}" in str(e.value)
+
+
+async def test_blocked_network_is_explained(rt: Runtime, fleet: Fleet) -> None:
+    fleet.vehicle.side_effect = httpx.ConnectError("Name or service not known")
+    assert rt.tesla is not None
+    with pytest.raises(ActionError, match="couldn't reach tesla.test from this machine"):
+        await rt.tesla.online_state()
 
 
 async def test_exchange_code_needs_the_client_secret(rt: Runtime) -> None:

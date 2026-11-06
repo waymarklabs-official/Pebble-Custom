@@ -752,9 +752,12 @@ def build_router(config: Config) -> APIRouter:
         _client(svc, "tesla")
         assert rt.vehicle is not None and rt.tesla is not None
         rt.vehicle.invalidate()
-        state = await rt.vehicle.state()
+        try:
+            state = await rt.vehicle.state(raise_errors=True)
+        except ActionError as e:
+            raise HTTPException(502, str(e)) from None     # Tesla's actual answer, explained
         if state is None:
-            raise HTTPException(502, "couldn't reach the car through Fleet API (see the activity log)")
+            raise HTTPException(502, "couldn't reach the car through Fleet API")
         return {"summary": describe_state(state, rt.tesla.config.temperature_unit), **state.as_dict()}
 
     @r.get("/setup", dependencies=Admin)

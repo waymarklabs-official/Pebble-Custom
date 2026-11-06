@@ -97,6 +97,8 @@ def test_google_connect_round_trip(client: TestClient, ntfy: NtfyMock) -> None:
 def test_tesla_connect_picks_the_only_car_and_adds_car_skills(client: TestClient, ntfy: NtfyMock) -> None:
     ntfy.router.post(TESLA_AUTH).mock(return_value=httpx.Response(200, json={
         "access_token": "a", "refresh_token": "r", "expires_in": 3600}))
+    ntfy.router.get(url__regex=r"^https://fleet-api\.prd\.\w+\.vn\.cloud\.tesla\.cn?\w*/api/1/users/region$").mock(
+        return_value=httpx.Response(200, json={"response": {"region": "na"}}))
     ntfy.router.get("https://tesla.test/api/1/vehicles").mock(return_value=httpx.Response(200, json={
         "response": [{"vin": TESLA_VIN, "display_name": "Blue"}]}))
     _, state = connect(client, "tesla")
@@ -245,6 +247,8 @@ def test_code_and_state(pasted: str, expect: tuple[str, str, str, str]) -> None:
 def test_finish_by_pasting_the_address(client: TestClient, ntfy: NtfyMock) -> None:
     token = ntfy.router.post(TESLA_AUTH).mock(return_value=httpx.Response(200, json={
         "access_token": "a", "refresh_token": "r", "expires_in": 3600}))
+    ntfy.router.get(url__regex=r"^https://fleet-api\.prd\.\w+\.vn\.cloud\.tesla\.cn?\w*/api/1/users/region$").mock(
+        return_value=httpx.Response(200, json={"response": {"region": "na"}}))
     ntfy.router.get("https://tesla.test/api/1/vehicles").mock(return_value=httpx.Response(200, json={
         "response": [{"vin": TESLA_VIN}]}))
     _, state = connect(client, "tesla")
@@ -295,3 +299,17 @@ def test_no_callback_page_without_a_public_url(make_client: Callable[..., TestCl
     cfg = make_config()
     c = make_client(cfg.model_copy(update={"server": cfg.server.model_copy(update={"public_url": None})}))
     assert c.get(f"{API}/integrations", headers=ADMIN_H).json()["callback_page"] is None
+
+
+def test_check_shows_teslas_actual_answer(client: TestClient, ntfy: NtfyMock) -> None:
+    svc = services(client)
+    client.portal.call(svc.store.set, "tesla.refresh_token", "r0")  # type: ignore[union-attr]
+    client.portal.call(svc.store.set, "tesla.vin", TESLA_VIN)  # type: ignore[union-attr]
+    ntfy.router.post(TESLA_AUTH).mock(return_value=httpx.Response(200, json={
+        "access_token": "a", "refresh_token": "r1", "expires_in": 3600}))
+    ntfy.router.get(f"https://tesla.test/api/1/vehicles/{TESLA_VIN}").mock(return_value=httpx.Response(
+        412, json={"error": "Account must be registered in the current region"}))
+    r = client.post(f"{API}/integrations/tesla/check", headers=ADMIN_H)
+    assert r.status_code == 502
+    detail = r.json()["detail"]
+    assert "press Register" in detail and "Account must be registered" in detail

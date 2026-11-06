@@ -97,8 +97,9 @@ class Vehicle:
         self._last_good: VehicleState | None = None
         self._lock = asyncio.Lock()
 
-    async def state(self, *, allow_stale: bool = False) -> VehicleState | None:
-        """Current state, or None if the API is unreachable. Never wakes the car."""
+    async def state(self, *, allow_stale: bool = False, raise_errors: bool = False) -> VehicleState | None:
+        """Current state, or None if the API is unreachable (``raise_errors``: raise why instead).
+        Never wakes the car."""
         async with self._lock:
             now = time.time()
             if self._cached and now - self._cached.fetched_at < self._ttl:
@@ -117,6 +118,8 @@ class Vehicle:
                     self._last_good = state
             except ActionError as e:
                 log.warning("vehicle state unavailable: %s", e)
+                if raise_errors:
+                    raise
                 return self._last_good if allow_stale else None
             self._cached = state
             return state
