@@ -51,8 +51,9 @@ class Notifier:
         body: dict[str, Any] = {"topic": topic or self._cfg.topic, "message": message}
         if title:
             body["title"] = title
-        if priority:
-            body["priority"] = priority
+        floor = self._cfg.min_priority
+        if priority or floor > 1:
+            body["priority"] = max(priority or 3, floor)
         if tags:
             body["tags"] = tags
         if click:

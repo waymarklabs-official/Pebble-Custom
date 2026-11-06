@@ -59,3 +59,17 @@ def test_envfile_runs_without_any_dependencies_installed() -> None:
                        capture_output=True, text=True, timeout=30, check=False)
     assert r.returncode == 0, r.stderr
     assert "NTFY_PUBLIC_URL=https://pi.tail1234.ts.net:8444" in r.stdout
+
+
+async def test_min_priority_raises_every_push(make_config, ntfy) -> None:  # type: ignore[no-untyped-def]
+    import httpx
+
+    from ringhub.notifier import Notifier
+
+    cfg = make_config(ntfy={"url": "https://ntfy.test", "topic": "ring", "min_priority": 4})
+    async with httpx.AsyncClient() as client:
+        n = Notifier(cfg.ntfy, client)
+        await n.publish("quiet confirmation", priority=2)
+        await n.publish("no priority given")
+        await n.publish("urgent", priority=5)
+    assert [b["priority"] for b in ntfy.bodies] == [4, 4, 5]

@@ -160,6 +160,9 @@ class NtfyConfig(_Strict):
     reminders_topic: str | None = Field(None, pattern=r"^[A-Za-z0-9_-]{1,64}$")
     """Optional separate topic for reminders, so they don't stack with confirmations."""
     token: OptionalSecret = None
+    min_priority: int = Field(1, ge=1, le=5)
+    """Floor for every push. 4 makes everything Time Sensitive on iPhone (alerts through Focus);
+    priorities 1-2 are delivered silently."""
 
 
 # --------------------------------------------------------------------------- devices
