@@ -344,7 +344,8 @@ def test_now_describes_mode_and_gestures(client: TestClient) -> None:
     assert g["double-click"]["skill"]["id"] == "next"
     assert g["single-click-hold"]["skill"]["id"] == "capture" and g["single-click-hold"]["inherited"] is True
     assert now["context"]["place"] == "work"
-    assert now["features"] == {"tesla": False, "ntfy": True, "llm": False, "tv": False, "links": True}
+    assert now["features"] == {"tesla": False, "google": False, "ntfy": True, "llm": False, "tv": False,
+                               "links": True}
     assert now["vehicle"] is None and now["attention"] is None
 
 

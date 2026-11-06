@@ -80,7 +80,7 @@ async def test_asleep_car_is_woken_and_preconditioned(rt: Runtime, fleet: Fleet,
     assert await run_car(rt) == {"did": "precondition", "state": "asleep"}
     assert not fleet.data.called  # never read vehicle_data from a sleeping car (would 408, not wake)
     assert fleet.wake.call_count == 1
-    assert fleet.commands() == [("auto_conditioning_start", None)]
+    assert fleet.commands() == [("auto_conditioning_start", {})]
     assert ntfy.last()["message"] == "🚗 Climate on (car was asleep)"
 
 
@@ -94,7 +94,7 @@ async def test_locked_online_car_preconditions_without_waking(rt: Runtime, fleet
     fleet.data.mock(return_value=vehicle_data(locked=True))
     assert await run_car(rt) == {"did": "precondition", "state": "locked"}
     assert not fleet.wake.called
-    assert fleet.commands() == [("auto_conditioning_start", None)]
+    assert fleet.commands() == [("auto_conditioning_start", {})]
     assert ntfy.last()["message"] == "🚗 Climate on (car was locked)"
 
 
@@ -247,7 +247,8 @@ async def test_vehicle_data_request_shape(rt: Runtime, fleet: Fleet) -> None:
     await rt.vehicle.state()
     req = fleet.data.calls.last.request
     assert req.headers["Authorization"] == "Bearer access-1"
-    assert parse_qs(req.url.query.decode())["endpoints"] == ["vehicle_state;drive_state;climate_state;location_data"]
+    assert parse_qs(req.url.query.decode())["endpoints"] == [
+        "vehicle_state;drive_state;climate_state;location_data;charge_state"]
 
 
 async def test_token_refresh_rotates_and_persists(rt: Runtime, fleet: Fleet, make_runtime: Factory,
@@ -312,8 +313,13 @@ def test_parse_vehicle_data_is_defensive() -> None:
 
 
 async def test_car_command_template_wakes_then_commands(rt: Runtime, fleet: Fleet, ntfy: NtfyMock) -> None:
+    from ringhub.catalog import Skill
+
     fleet.vehicle.side_effect = [state("online")]
-    await rt.run_skill("frunk", await rt.base_vars())
+    await rt.catalog.put(Skill.model_validate({"id": "raw_frunk", "name": "Open the frunk", "icon": "🧳",
+                                               "template": "car_command", "params": {
+                                                   "command": "actuate_trunk", "params": {"which_trunk": "front"}}}))
+    await rt.run_skill("raw_frunk", await rt.base_vars())
     assert fleet.wake.called
     assert fleet.commands() == [("actuate_trunk", {"which_trunk": "front"})]
     assert ntfy.last()["message"] == "🧳 Open the frunk"  # car_command confirms

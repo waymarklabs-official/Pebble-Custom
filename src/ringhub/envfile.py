@@ -64,9 +64,13 @@ NTFY_TOKEN=
 NTFY_MIN_PRIORITY=4
 TZ={tz}
 # ANTHROPIC_API_KEY=
-# TESLA_VIN=
+# Car control (docs/INTEGRATIONS.md): your app at developer.tesla.com, and the domain hosting its public key.
 # TESLA_CLIENT_ID=
-# TESLA_REFRESH_TOKEN=
+# TESLA_CLIENT_SECRET=
+# TESLA_DOMAIN=
+# Google Calendar (docs/INTEGRATIONS.md): an OAuth client of type "Web application".
+# GOOGLE_CLIENT_ID=
+# GOOGLE_CLIENT_SECRET=
 """
 
 

@@ -80,6 +80,8 @@ ringhub check && ringhub serve
 ringhub plus its own private ntfy server in Docker, published on your tailnet without touching
 anything else on the machine.
 
+Car control and Google Calendar: [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md).
+
 Otherwise follow [docs/SETUP.md](docs/SETUP.md): point the Index app's webhooks at the hub and add
 two or three Shortcuts automations (arrive/leave home, car Bluetooth). It takes about 30
 minutes. The [design doc](docs/DESIGN.md) explains the model, and

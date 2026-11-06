@@ -287,3 +287,15 @@ input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--accent); }
 .toast.error { background: var(--bad); color: #fff; }
 @media (min-width: 900px) { .toast { bottom: 1.5rem; } }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+/* Integrations (Setup) */
+.int + .int { border-top: 1px solid var(--line); margin-top: 1rem; padding-top: 1rem; }
+.int-title { margin: 0 0 .5rem; }
+.int-step { margin: .6rem 0; }
+.int-step-head { display: flex; align-items: center; gap: .5rem; }
+.int-step-head h3 { margin: 0; font-size: 1rem; }
+.int-step-n { inline-size: 1.5rem; block-size: 1.5rem; border-radius: 50%; display: inline-grid; place-items: center;
+  font-size: .8rem; font-weight: 600; border: 1px solid var(--line); flex: none; }
+.int-step.done .int-step-n { background: var(--good); border-color: var(--good); color: #fff; }
+.int-step-body { padding-inline-start: 2rem; }
+.int-step-body .copy-row { margin-block: .25rem; }

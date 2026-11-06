@@ -30,7 +30,17 @@ def _cmd_check(args: argparse.Namespace) -> int:
     print(f"    phone context feed: {'on' if srv.context_token else 'OFF (set server.context_token)'}")
     print(f"    reminder buttons: {'on via ' + srv.public_url if srv.public_url else 'off (set server.public_url)'}")
     print(f"    feedback: {'ntfy ' + cfg.ntfy.topic if cfg.ntfy else 'none (failures are only logged!)'}")
-    print(f"    car: {'Tesla ' + cfg.tesla.vin[-6:] if cfg.tesla else 'not configured'}")
+    if cfg.tesla is None:
+        car = "off (set TESLA_CLIENT_ID in .env)"
+    else:
+        car = (f"Tesla {cfg.tesla.vin[-6:]}" if cfg.tesla.vin else "Tesla (connect in Setup → Integrations)")
+        if not cfg.tesla.client_secret or not cfg.tesla.client_secret.get_secret_value():
+            car += " · TESLA_CLIENT_SECRET missing (needed to connect)"
+        if not cfg.tesla.domain:
+            car += " · TESLA_DOMAIN missing (needed for the car to trust this hub)"
+    print(f"    car: {car}")
+    gcal = "on (connect in Setup → Integrations)" if cfg.google else "off (set GOOGLE_CLIENT_ID in .env)"
+    print(f"    google calendar: {gcal}")
     print(f"    voice fallback LLM: {'on' if cfg.llm else 'off'}")
     digest = cfg.memory.digest_time.strftime("%H:%M") if cfg.memory.digest_time else "off"
     print(f"    digest: {digest} · markdown mirror: {cfg.memory.markdown_dir or 'off'}")

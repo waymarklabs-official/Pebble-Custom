@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import logging
 import secrets
 import uuid
@@ -13,7 +14,7 @@ from typing import Any
 
 import httpx
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import UploadFile
 
@@ -24,8 +25,9 @@ from .config import Config
 from .engine import Engine
 from .limits import BodyLimitMiddleware
 from .models import Gesture, RingEvent
+from .oauth import redirect_uri, take_state
 from .runtime import Runtime
-from .seed import seed_if_empty
+from .seed import car_skills, ensure_skills, seed_if_empty
 from .store import Store
 from .webhook import WebhookError, authenticate, is_test_delivery, parse_button_body
 
@@ -93,6 +95,7 @@ async def _link_secret(store: Store) -> bytes:
 CSP = ("default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
        "frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 
+_BACK = '<p><a href="/#/setup">Back to Setup</a></p>'
 _LINK_PAGE = """<!doctype html><meta name=viewport content="width=device-width,initial-scale=1">
 <title>ringhub</title><body style="font:16px system-ui;padding:2rem;max-width:30rem;margin:auto">
 <p>{text}</p>{form}</body>"""
@@ -107,12 +110,18 @@ def create_app(config: Config) -> FastAPI:
             runtime = Runtime(config, store, client, link_secret=secret)
             if await seed_if_empty(runtime.catalog, config):
                 log.info("first boot: wrote default places, skills and modes")
+            if runtime.tesla is not None and await runtime.tesla.connected():
+                # A car connected after first boot (or new default car skills): add what's missing.
+                added = await ensure_skills(runtime.catalog, car_skills())
+                if added:
+                    log.info("added car skills: %s", ", ".join(added))
             engine = Engine(runtime)
             await engine.start()
             app.state.services = Services(config, store, runtime, engine, secret)
-            log.info("ringhub %s ready (dashboard %s, ntfy %s, tesla %s)", __version__,
+            log.info("ringhub %s ready (dashboard %s, ntfy %s, tesla %s, google calendar %s)", __version__,
                      "on" if config.server.admin_token else "off — set server.admin_token",
-                     "on" if config.ntfy else "off", "on" if config.tesla else "off")
+                     "on" if config.ntfy else "off", "on" if config.tesla else "off",
+                     "on" if config.google else "off")
             try:
                 yield
             finally:
@@ -188,6 +197,40 @@ def create_app(config: Config) -> FastAPI:
         if r is None:
             return JSONResponse({"ok": True, "note": "already handled"})
         return JSONResponse({"ok": True, "status": r.status})
+
+    # ------------------------------------------------------------------ OAuth return trip
+
+    @app.get("/oauth/{provider}/callback", response_model=None)
+    async def oauth_callback(provider: str, request: Request, code: str = "", state: str = "",
+                             error: str = "", error_description: str = "") -> Response:
+        """Tesla/Google send the browser back here. The single-use ``state`` (issued by the
+        admin-only connect endpoint) is the authorization; the session cookie isn't sent on this
+        cross-site return (SameSite=Strict)."""
+        svc: Services = request.app.state.services
+        rt = svc.runtime
+        client = rt.tesla if provider == "tesla" else rt.gcal if provider == "google" else None
+        if client is None:
+            return HTMLResponse(_LINK_PAGE.format(text="Unknown or disabled integration.", form=""), 404)
+        if not await take_state(svc.store, state, provider):
+            return HTMLResponse(_LINK_PAGE.format(
+                text="This sign-in link expired or was already used. Start again from Setup → Integrations.",
+                form=""), 400)
+        if error or not code:
+            why = html.escape(error_description or error or "no authorization code")
+            return HTMLResponse(_LINK_PAGE.format(text=f"Not connected: {why}", form=_BACK), 400)
+        ru = redirect_uri(rt.links.public_url, provider)
+        assert ru is not None   # a state is only issued when public_url is set
+        try:
+            await client.exchange_code(code, ru)
+            if provider == "tesla" and rt.tesla is not None:
+                try:
+                    await rt.tesla.select_vehicle()   # the only car on the account, if there's just one
+                except ActionError:
+                    pass                               # several (or none): pick in the dashboard
+                await ensure_skills(rt.catalog, car_skills())
+        except ActionError as e:
+            return HTMLResponse(_LINK_PAGE.format(text=f"Not connected: {html.escape(str(e))}", form=_BACK), 502)
+        return RedirectResponse(f"/#/setup?connected={provider}", status_code=303)
 
     app.include_router(build_router(config))
     app.add_middleware(BodyLimitMiddleware, default=API_BODY_LIMIT,

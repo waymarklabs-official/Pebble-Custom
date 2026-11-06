@@ -72,6 +72,22 @@ expect_code '401' "unsigned webhook is refused" -H 'Content-Type: application/js
   -H 'X-Index-Webhook-Version: 1' -H 'X-Index-Trigger: click' -H "X-Index-Delivery: $(python3 -c 'import uuid; print(uuid.uuid4())')" \
   -d '{"event":"button","gesture":"click","clicks":1,"pressedAt":0,"client":"ring"}' http://127.0.0.1:8787/ring
 
+step "Tesla signing proxy: keys from deploy/pi/tesla-keys.sh, pinned image, ringhub trusts its certificate"
+mkdir -p "$WORK/deploy/pi"
+cp "$ROOT/deploy/pi/tesla-keys.sh" "$WORK/deploy/pi/"
+# As on a Pi: the key files belong to uid 1000, which both containers run as.
+if [ "$(id -u)" = 0 ]; then bash "$WORK/deploy/pi/tesla-keys.sh" >/dev/null
+else sudo -n bash "$WORK/deploy/pi/tesla-keys.sh" >/dev/null; fi
+dc --profile tesla pull --quiet tesla-proxy
+dc --profile tesla up -d tesla-proxy
+probe='import httpx, sys
+r = httpx.get("https://tesla-proxy:4443/api/1/vehicles/5YJTEST0000000001/vehicle_data",
+              verify="/app/data/tesla/tls-cert.pem", timeout=10, trust_env=False)
+print("HTTP", r.status_code)'
+for _ in $(seq 1 30); do dc exec -T ringhub python -c "$probe" >/dev/null 2>&1 && break; sleep 2; done
+dc exec -T ringhub python -c "$probe"     # TLS to the proxy verified against the generated certificate
+[ "$(dc ps --format '{{.State}}' tesla-proxy)" = running ] || { echo "FAIL: tesla-proxy is not running"; exit 1; }
+
 step "Ring → ringhub → ntfy → iPhone account"
 MARKER="e2e$(python3 -c 'import secrets; print(secrets.token_hex(4))')"
 dc exec -T ringhub ringhub send hold --secret "$SECRET" --transcript "the parking spot code is $MARKER"

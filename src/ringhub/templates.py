@@ -55,6 +55,25 @@ class WebhookP(_P):
     body: dict[str, Any] | None = Field(None, title="JSON body (optional)")
 
 
+class CarActionP(_P):
+    action: Literal[
+        "lock", "unlock", "climate_on", "climate_off", "defrost_on", "defrost_off", "set_temp",
+        "frunk", "trunk", "honk", "flash", "charge_port_open", "charge_port_close", "charge_start", "charge_stop",
+        "charge_limit", "sentry_on", "sentry_off", "vent_windows", "close_windows",
+        "seat_heat_on", "seat_heat_off", "wheel_heat_on", "wheel_heat_off", "garage",
+    ] = Field(title="What to do")
+    value: float | None = Field(None, title="Value (optional)",
+                                description="Temperature (°F or °C), charge limit (%) or seat heat 1-3. "
+                                            "Or put {value:number} in a phrase, e.g. “set the car to {value:number}”.")
+    require_near: bool | None = Field(None, title="Only when I'm at the car",
+                                      description="Default: on for unlock, trunk, frunk, vent and garage.")
+
+
+class CalendarAgendaP(_P):
+    day: Literal["today", "tomorrow", "this week", "next"] = Field("today", title="Which events",
+                                                                   description="“next” = your next event")
+
+
 class CarSmartP(_P):
     unlocked: Literal["trunk", "frunk", "nothing"] = Field(
         "trunk", title="When unlocked (you're at the car)", description="Phone Key unlocks the car as you walk up.")
@@ -123,8 +142,17 @@ TEMPLATES: dict[str, TemplateSpec] = {t.id: t for t in [
                  "Unlocked (you're at the car) → open the trunk. Locked/away → start climate.",
                  CarSmartP, lambda p, s: [{"car.smart": {"unlocked": p.unlocked, "locked": p.locked}}],
                  needs=("tesla",), confirm=False),
+    TemplateSpec("car_action", "Car", "🚘", "Lock, climate, temperature, trunk, charging, sentry, windows, "
+                 "seat heat, garage door. Unlock/trunk/garage only run when you're at the car.",
+                 CarActionP, lambda p, s: [{"car.command": {k: v for k, v in p.model_dump().items()
+                                                            if v is not None}}], needs=("tesla",), confirm=False),
+    TemplateSpec("car_status", "Car status", "🔋", "Battery, range, locks and climate (never wakes the car).",
+                 NoParams, lambda p, s: [{"car.status": {}}], needs=("tesla",), confirm=False),
     TemplateSpec("car_command", "Car command", "🔋", "Any Fleet API command (lock, honk, charge port…).",
                  CarCommandP, lambda p, s: [{"tesla": {"command": p.command, "params": p.params}}], needs=("tesla",)),
+    TemplateSpec("calendar_agenda", "What's on my calendar", "📅", "Pushes today's (or tomorrow's) events "
+                 "from Google Calendar.", CalendarAgendaP,
+                 lambda p, s: [{"calendar.agenda": {"day": p.day}}], needs=("google",), confirm=False),
     TemplateSpec("tv", "TV remote", "📺", "Play/pause, power, volume on Android/Fire TV or Roku.",
                  TvP, lambda p, s: [{"tv": {"command": p.command.value, "target": p.target}}], needs=("devices",)),
     TemplateSpec("custom", "Custom steps", "🧩", "Advanced: write steps by hand (JSON).",

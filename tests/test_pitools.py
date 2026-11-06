@@ -226,7 +226,8 @@ def test_cli_listeners_and_serve_ports(monkeypatch: pytest.MonkeyPatch, capsys: 
 
 def test_compose_images_resolve_the_tag_from_env() -> None:
     compose = (ROOT / "docker-compose.yml").read_text()
-    ring, ntfy = compose_images(compose, {"RINGHUB_TAG": "sha-1c4626a"})
+    ring, ntfy, proxy = compose_images(compose, {"RINGHUB_TAG": "sha-1c4626a"})
+    assert proxy.startswith("tesla/vehicle-command:") and "@sha256:" in proxy   # the Tesla signing proxy
     assert ring == "ghcr.io/waymarklabs-official/pebble-custom:sha-1c4626a"
     assert ntfy.startswith("binwiederhier/ntfy:v") and "@sha256:" in ntfy   # pinned by digest
     assert compose_images(compose, {})[0].endswith(":main")

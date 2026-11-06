@@ -20,6 +20,7 @@ from .context import Context
 from .devices import DeviceRegistry
 from .executor import Executor
 from .feedback import Feedback, cap
+from .gcal import GoogleCalendar
 from .links import LinkSigner
 from .llm import LlmRouter
 from .memory.notes import Notes
@@ -137,6 +138,7 @@ class Runtime:
         self.tesla: TeslaClient | None = TeslaClient(config.tesla, store) if config.tesla else None
         self.vehicle: Vehicle | None = (
             Vehicle(self.tesla, config.tesla.state_ttl_seconds) if self.tesla and config.tesla else None)
+        self.gcal: GoogleCalendar | None = GoogleCalendar(config.google, store) if config.google else None
         self._phrases: tuple[int, PhraseIndex] | None = None
 
     def now(self) -> datetime:
@@ -230,3 +232,5 @@ class Runtime:
         await self.devices.aclose()
         if self.tesla is not None:
             await self.tesla.aclose()
+        if self.gcal is not None:
+            await self.gcal.aclose()
