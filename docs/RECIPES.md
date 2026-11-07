@@ -103,6 +103,15 @@ example, the Tesla app's **Lock** action, saved as a Shortcut named "Lock Car":
 The name must match the Shortcuts app exactly. Tap the notification to run it, or expand the
 notification and tap **Run Lock Car**.
 
+**No tap at all:** the **Run an iPhone Shortcut (hands-free)** template emails a subject that an
+iPhone Email automation, set to Run Immediately, turns into a Shortcut run. Setup is in
+[INTEGRATIONS.md](INTEGRATIONS.md#email-run-iphone-shortcuts-hands-free).
+
+```json
+{"id": "lock_car_mail", "name": "Lock Car (hands-free)", "icon": "📧", "template": "shortcut_email",
+ "params": {"subject": "ring lock car 7Q4"}}
+```
+
 ## Work & household
 
 ### Quiet meetings

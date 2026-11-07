@@ -22,6 +22,7 @@ from pydantic import (
     Field,
     PlainSerializer,
     SecretStr,
+    ValidationInfo,
     field_validator,
     model_validator,
 )
@@ -288,6 +289,50 @@ class GoogleConfig(_Strict):
         return None if isinstance(v, str) and not v.strip() else v
 
 
+class EmailConfig(_Strict):
+    """Send email from the hub over SMTP. Its job: start an iPhone Shortcut hands-free, through a
+    personal automation that runs when an email with a given subject arrives. See docs/INTEGRATIONS.md."""
+
+    username: str
+    """SMTP login, e.g. you@gmail.com. Empty turns email off."""
+    password: SecretStr
+    """For Gmail, an App Password (myaccount.google.com/apppasswords), never your Google password."""
+    to: str = Field(pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    """Who gets the emails. An iCloud address arrives in seconds; Gmail in the iPhone Mail app is only
+    fetched every 15 minutes or more, which is too slow for a button."""
+    from_addr: str | None = Field(None, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    """Sender address. Default: username."""
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = Field(465, ge=1, le=65535)
+    """465 = TLS from the start; 587 (or anything else) = STARTTLS. Never sent unencrypted."""
+    timeout_seconds: float = Field(20.0, gt=0, le=120)
+
+    @field_validator("password", mode="after")
+    @classmethod
+    def _password_set(cls, v: SecretStr) -> SecretStr:
+        if not v.get_secret_value().strip():
+            raise ValueError("set EMAIL_PASSWORD (email is on because EMAIL_USERNAME is set)")
+        return v
+
+    @field_validator("from_addr", "smtp_host", "smtp_port", mode="before")
+    @classmethod
+    def _blank_is_default(cls, v: Any, info: ValidationInfo) -> Any:
+        if isinstance(v, str) and not v.strip():
+            return cls.model_fields[str(info.field_name)].default
+        return v
+
+    @property
+    def sender(self) -> str:
+        return self.from_addr or self.username
+
+
+def _email_off_when_unset(v: Any) -> Any:
+    """The ``email:`` section fed from .env stays off until EMAIL_USERNAME is set."""
+    if isinstance(v, dict) and not str(v.get("username") or "").strip():
+        return None
+    return v
+
+
 def _off_when_unset(v: Any) -> Any:
     """``tesla:``/``google:`` sections fed from .env stay off until a client id is set."""
     if isinstance(v, dict) and not str(v.get("client_id") or "").strip():
@@ -372,6 +417,7 @@ class Config(_Strict):
     media_sources: dict[str, MediaSourceConfig] = Field(default_factory=dict)
     tesla: Annotated[TeslaConfig | None, BeforeValidator(_off_when_unset)] = None
     google: Annotated[GoogleConfig | None, BeforeValidator(_off_when_unset)] = None
+    email: Annotated[EmailConfig | None, BeforeValidator(_email_off_when_unset)] = None
     llm: LlmConfig | None = None
     allow_exec: bool = False
     notify_on_error: bool = True

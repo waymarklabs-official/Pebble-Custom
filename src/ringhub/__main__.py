@@ -48,6 +48,9 @@ def _cmd_check(args: argparse.Namespace) -> int:
             print(f"      ! {problem}")
     gcal = "on (connect in Setup → Integrations)" if cfg.google else "off (set GOOGLE_CLIENT_ID in .env)"
     print(f"    google calendar: {gcal}")
+    mail = (f"on ({cfg.email.sender} → {cfg.email.to} via {cfg.email.smtp_host}:{cfg.email.smtp_port})"
+            if cfg.email else "off (set EMAIL_USERNAME in .env)")
+    print(f"    email: {mail}")
     print(f"    voice fallback LLM: {'on' if cfg.llm else 'off'}")
     digest = cfg.memory.digest_time.strftime("%H:%M") if cfg.memory.digest_time else "off"
     print(f"    digest: {digest} · markdown mirror: {cfg.memory.markdown_dir or 'off'}")
