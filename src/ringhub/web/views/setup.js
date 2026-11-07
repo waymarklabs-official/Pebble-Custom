@@ -122,14 +122,34 @@ function step(n, title, done, ...body) {
 function integrations(integ, refresh) {
   const card = h('section', { class: 'card', id: 'integrations' }, h('h2', {}, 'Integrations'),
     h('p', { class: 'muted small' }, 'Full instructions: docs/INTEGRATIONS.md in the repository.'));
-  add(card, teslaSection(integ.tesla, refresh), googleSection(integ.google, refresh));
+  add(card, teslaSection(integ.tesla, refresh, integ.callback_page), googleSection(integ.google, refresh));
   return card;
 }
 
-function teslaSection(t, refresh) {
+// Copy / download buttons for the callback.html that goes on your Tesla domain.
+function pageButtons(html) {
+  return h('div', { class: 'inline-form wrap' },
+    h('button', {
+      type: 'button', class: 'btn small ghost',
+      onClick: async () => { try { await navigator.clipboard.writeText(html); toast('Copied'); } catch { toast('Copy failed', 'error'); } },
+    }, 'Copy page'),
+    h('button', {
+      type: 'button', class: 'btn small ghost',
+      onClick: () => {
+        const url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+        const a = h('a', { href: url, download: 'callback.html' });
+        document.body.append(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      },
+    }, 'Download callback.html'));
+}
+
+function teslaSection(t, refresh, callbackPage) {
   const box = h('div', { class: 'int' }, h('h3', { class: 'int-title' }, '🚗 Tesla'));
   if (!t.enabled) {
-    add(box, h('p', { class: 'muted small' }, 'Off. Set TESLA_CLIENT_ID, TESLA_CLIENT_SECRET and TESLA_DOMAIN in .env, run deploy/pi/tesla-keys.sh, then start the proxy (docker compose --profile tesla up -d).'));
+    add(box,
+      h('p', { class: 'muted small' }, 'Off. Before Tesla can be set up, your public site (e.g. GitHub Pages) needs two files: data/tesla/public-key.pem and this callback.html (bash deploy/pi/tesla-keys.sh makes both). Then set TESLA_CLIENT_ID, TESLA_CLIENT_SECRET and TESLA_DOMAIN in .env and start the proxy (docker compose --profile tesla up -d). Full steps: docs/INTEGRATIONS.md.'),
+      callbackPage ? pageButtons(callbackPage) : h('p', { class: 'form-error' }, 'Set RINGHUB_PUBLIC_URL first: the page sends your phone back to it.'));
     return box;
   }
   const out = h('p', { class: 'muted small', role: 'status' });
@@ -141,22 +161,32 @@ function teslaSection(t, refresh) {
     },
   }, label);
 
+  const problems = (list) => (list || []).map((m) => h('p', { class: 'form-error' }, m));
   add(box,
-    step(1, 'Your public key', Boolean(t.public_key),
+    step(1, 'Your domain (e.g. GitHub Pages)', Boolean(t.public_key) && !(t.domain_problems || []).length,
       t.public_key
-        ? h('p', { class: 'muted small' }, 'This hub signs commands with data/tesla/private-key.pem. Host data/tesla/public-key.pem at:')
+        ? h('p', { class: 'muted small' }, 'Tesla needs a public HTTPS site of yours (never this Pi). Host these two files there:')
         : h('p', { class: 'form-error' }, t.public_key_error || 'No key yet: run  bash deploy/pi/tesla-keys.sh  on the Pi.'),
-      t.public_key_url ? copyRow('URL', t.public_key_url) : h('p', { class: 'form-error' }, 'Set TESLA_DOMAIN in .env.')),
+      ...problems(t.domain_problems),
+      t.public_key_url ? copyRow('1. Public key (data/tesla/public-key.pem) at', t.public_key_url) : h('p', { class: 'form-error' }, 'Set TESLA_DOMAIN in .env.'),
+      t.bridge_html ? [
+        copyRow('2. This page at', t.redirect_uri),
+        h('details', {}, h('summary', { class: 'muted small' }, 'Show the page (it sends your phone back here after signing in)'),
+          h('pre', { class: 'code-block' }, t.bridge_html)),
+        pageButtons(t.bridge_html),
+      ] : null),
     step(2, 'Connect your Tesla account', t.connected,
-      t.redirect_uri ? copyRow('Redirect URI (add it to your app at developer.tesla.com)', t.redirect_uri)
-        : h('p', { class: 'form-error' }, 'Set RINGHUB_PUBLIC_URL first.'),
+      t.redirect_uri ? copyRow('Redirect URI (enter exactly this at developer.tesla.com)', t.redirect_uri)
+        : h('p', { class: 'form-error' }, 'Set TESLA_DOMAIN (or TESLA_REDIRECT_URI) in .env.'),
+      ...problems(t.redirect_problems),
       t.has_secret ? null : h('p', { class: 'form-error' }, 'Set TESLA_CLIENT_SECRET in .env.'),
       h('div', { class: 'inline-form wrap' },
         h('button', { type: 'button', class: `btn small ${t.connected ? 'ghost' : 'primary'}`, onClick: () => startConnect('tesla') },
           t.connected ? 'Reconnect' : 'Connect Tesla'),
         t.connected ? confirmButton('Disconnect', 'Tap again', async () => {
           try { await post('/integrations/tesla/disconnect'); toast('Tesla disconnected'); refresh(); } catch (e) { toast(e.message, 'error'); }
-        }, 'btn small ghost') : null)),
+        }, 'btn small ghost') : null),
+      finishBox(refresh)),
   );
   if (t.connected) {
     const cars = h('div', { class: 'inline-form wrap' });
@@ -194,6 +224,25 @@ function teslaSection(t, refresh) {
   return box;
 }
 
+// After signing in you normally land back here automatically. If you landed on a page that couldn't
+// reach the hub (Tailscale off), paste that page's address to finish.
+function finishBox(refresh) {
+  const input = h('input', { type: 'url', placeholder: 'Paste the address you landed on', 'aria-label': 'Address after signing in' });
+  return h('details', { class: 'finish' },
+    h('summary', { class: 'muted small' }, 'Finish connecting by pasting the address'),
+    h('form', {
+      class: 'inline-form wrap',
+      onSubmit: async (e) => {
+        e.preventDefault();
+        try {
+          const r = await post('/integrations/finish', { url: input.value });
+          toast(r.provider === 'tesla' ? 'Tesla connected' : 'Google Calendar connected');
+          refresh();
+        } catch (ex) { toast(ex.message, 'error'); }
+      },
+    }, input, h('button', { type: 'submit', class: 'btn small primary' }, 'Finish')));
+}
+
 function googleSection(g, refresh) {
   const box = h('div', { class: 'int' }, h('h3', { class: 'int-title' }, '📅 Google Calendar'));
   if (!g.enabled) {
@@ -211,7 +260,8 @@ function googleSection(g, refresh) {
         g.connected ? 'Reconnect' : 'Connect Google Calendar'),
       g.connected ? confirmButton('Disconnect', 'Tap again', async () => {
         try { await post('/integrations/google/disconnect'); toast('Google Calendar disconnected'); refresh(); } catch (e) { toast(e.message, 'error'); }
-      }, 'btn small ghost') : null));
+      }, 'btn small ghost') : null),
+    g.connected ? null : finishBox(refresh));
   return box;
 }
 

@@ -68,6 +68,8 @@ TZ={tz}
 # TESLA_CLIENT_ID=
 # TESLA_CLIENT_SECRET=
 # TESLA_DOMAIN=
+# Only if your callback page isn't at https://<TESLA_DOMAIN>/callback.html:
+# TESLA_REDIRECT_URI=
 # Google Calendar (docs/INTEGRATIONS.md): an OAuth client of type "Web application".
 # GOOGLE_CLIENT_ID=
 # GOOGLE_CLIENT_SECRET=

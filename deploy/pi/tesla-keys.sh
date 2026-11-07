@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Make the keys the Tesla integration needs, in data/tesla/. Never replaces an existing key:
+# Make the files the Tesla integration needs, in data/tesla/. Never replaces an existing key:
 # re-running it is safe, and your car keeps trusting the hub.
 #
 #   private-key.pem  signs your car commands (prime256v1). Stays on this machine; the proxy reads it.
 #   public-key.pem   host it at https://<TESLA_DOMAIN>/.well-known/appspecific/com.tesla.3p.public-key.pem
+#   callback.html    host it at https://<TESLA_DOMAIN>/callback.html: after you sign in, Tesla sends
+#                    your browser there, and it forwards to ringhub (made from RINGHUB_PUBLIC_URL in .env)
 #   tls-key.pem, tls-cert.pem   TLS for the proxy, which only ringhub talks to (as https://tesla-proxy:4443)
 #
 #   bash deploy/pi/tesla-keys.sh
@@ -36,9 +38,28 @@ fi
 chmod 600 "$DIR/private-key.pem" "$DIR/tls-key.pem"
 chmod 644 "$DIR/public-key.pem" "$DIR/tls-cert.pem"
 chmod 700 "$DIR"
-# The containers run as uid 1000.
+
+# The forwarding page: derived from RINGHUB_PUBLIC_URL, so it's rewritten every time.
+HAVE_PAGE=0
+if [ -f .env ] && PYTHONPATH=src python3 -m ringhub.pitools callback-page --env .env > "$DIR/callback.html.tmp" 2>"$DIR/.err"; then
+  mv "$DIR/callback.html.tmp" "$DIR/callback.html"; chmod 644 "$DIR/callback.html"; HAVE_PAGE=1
+else
+  rm -f "$DIR/callback.html.tmp"
+fi
 if [ "$(id -u)" = 0 ]; then chown -R 1000:1000 "$DIR"; fi
 
 echo
-echo "Public key (host this file at https://<TESLA_DOMAIN>/.well-known/appspecific/com.tesla.3p.public-key.pem):"
+echo "Put these on your public site (e.g. the waymarklabs-official.github.io repository), with an empty .nojekyll:"
+echo "  $DIR/public-key.pem  ->  .well-known/appspecific/com.tesla.3p.public-key.pem"
+if [ "$HAVE_PAGE" = 1 ]; then
+  echo "  $DIR/callback.html   ->  callback.html"
+else
+  WHY="no .env here yet"
+  [ -s "$DIR/.err" ] && WHY="$(tail -1 "$DIR/.err")"
+  echo "  callback.html: not made ($WHY)."
+  echo "    Run this again once .env has RINGHUB_PUBLIC_URL (docs/PI.md step 2)."
+fi
+rm -f "$DIR/.err"
+echo
+echo "Public key:"
 cat "$DIR/public-key.pem"

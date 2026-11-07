@@ -299,3 +299,6 @@ input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--accent); }
 .int-step.done .int-step-n { background: var(--good); border-color: var(--good); color: #fff; }
 .int-step-body { padding-inline-start: 2rem; }
 .int-step-body .copy-row { margin-block: .25rem; }
+.code-block { white-space: pre-wrap; word-break: break-all; font-size: .72rem; background: var(--line); padding: .5rem; border-radius: .4rem; max-height: 14rem; overflow: auto; }
+.finish { margin-top: .4rem; }
+.finish input { flex: 1 1 14rem; }

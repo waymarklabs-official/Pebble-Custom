@@ -190,12 +190,21 @@ LISTEN 0      4096               *:8444             *:*
 LISTEN 0      4096            [::]:9000          [::]:*
 LISTEN 0      4096   100.75.135.17:9001       0.0.0.0:*
 LISTEN 0      4096   [fe80::1%eth0]:9002        [::]:*
+LISTEN 0      128       0.0.0.0%lo:9112       0.0.0.0:*
+LISTEN 0      4096       [::1]%lo:9109          [::]:*
+LISTEN 0      4096   [::ffff:127.0.0.1]:9106       *:*
+LISTEN 0      4096            *%lo:9111             *:*
+LISTEN 0      4096   [::ffff:192.168.1.9]:9107     *:*
+LISTEN 0      4096   [fe80::1]%eth0:9108        [::]:*
 """
 
 
 @pytest.mark.parametrize(("port", "expect"), [
     (8787, []), (8446, []), (8445, []),                          # loopback only: Serve hides nothing
+    # ss puts an interface suffix after the brackets; bound to lo (even 0.0.0.0) or IPv4-mapped loopback
+    (9112, []), (9109, []), (9106, []), (9111, []),
     (8444, ["*:8444"]), (9000, ["[::]:9000"]), (9001, ["100.75.135.17:9001"]), (9002, ["[fe80::1%eth0]:9002"]),
+    (9107, ["[::ffff:192.168.1.9]:9107"]), (9108, ["[fe80::1]%eth0:9108"]),
     (1234, []),
 ])
 def test_listeners_ignore_loopback_only_sockets(port: int, expect: list[str]) -> None:
@@ -393,8 +402,26 @@ def test_scripts_never_reset_or_remove_unverified_ports() -> None:
         assert "serve reset" not in code, script
         assert "tailscale funnel" not in code, script   # never changes what is public
         for line in code.splitlines():
+            if line.lstrip().startswith(("warn ", "fail ", "ok ", "info ", "echo ", "printf ")):
+                continue                                   # advice printed for a person, not run
             if " off" in line and "tailscale serve" in line:
                 assert '--https="$port" off' in line, f"{script.name}: {line.strip()}"
+
+
+def test_nothing_tells_you_to_publish_without_naming_a_port() -> None:
+    """`tailscale serve --bg 8787` (no --https=) takes the machine's plain https address. An early
+    instruction did exactly that and took over another app's address (T-Stream's add page)."""
+    import re
+
+    files = [*(ROOT / "docs").glob("*.md"), ROOT / "README.md", ROOT / "docker-compose.yml",
+             *(ROOT / "deploy").rglob("*.sh"), *(ROOT / "src" / "ringhub").rglob("*.py"),
+             *(ROOT / "src" / "ringhub" / "web").rglob("*.js")]
+    for f in files:
+        for m in re.finditer(r"tailscale (?:serve|funnel)\b[^`\n\"']*", f.read_text(encoding="utf-8")):
+            cmd = m.group(0)
+            publishes = "--bg" in cmd or re.search(r"\s(\d{2,5}|https?://\S+)\s*$", cmd)
+            if publishes:
+                assert "--https=" in cmd, f"{f.relative_to(ROOT)}: {cmd!r} publishes without naming a port"
 
 
 def test_pitools_runs_without_any_dependencies_installed() -> None:
@@ -405,3 +432,13 @@ def test_pitools_runs_without_any_dependencies_installed() -> None:
     r = subprocess.run([sys.executable, "-c", code], env={"PYTHONPATH": str(src)},
                        capture_output=True, text=True, timeout=30, check=False)
     assert r.returncode == 0 and r.stdout == "claude-x\n", r.stderr
+
+
+def test_cli_callback_page(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    env = tmp_path / ".env"
+    env.write_text("RINGHUB_PUBLIC_URL=https://pi.t.ts.net:8445\n")
+    assert pitools.main(["callback-page", "--env", str(env)]) == 0
+    assert 'location.replace("https://pi.t.ts.net:8445/oauth/callback" + q)' in capsys.readouterr().out
+    env.write_text("RINGHUB_PUBLIC_URL=\n")
+    assert pitools.main(["callback-page", "--env", str(env)]) == 2
+    assert "RINGHUB_PUBLIC_URL" in capsys.readouterr().err

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import ipaddress
 import json
 import re
 import sys
@@ -23,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from .envfile import DEFAULT_NTFY_PORT, DEFAULT_RING_PORT
+from .oauth import bridge_page, callback_url
 
 RING_TARGET = "http://127.0.0.1:8787"
 NTFY_TARGET = "http://127.0.0.1:2586"
@@ -247,11 +249,33 @@ def ports_serving(mappings: Mapping[int, ServeMapping], target: str) -> list[int
 # --- local listeners --------------------------------------------------------------------------
 
 
+def _loopback_only(host: str) -> bool:
+    """Whether an `ss -ltn` local address (without its port) can only be reached from this machine.
+
+    ss prints `addr%ifname` for a socket bound to one interface, with IPv6 brackets before the
+    suffix (`[::1]%lo`); `[fe80::1%eth0]` is accepted too. Bound to `lo`, even 0.0.0.0 is loopback-only.
+    """
+    addr, _, ifname = host.partition("%")
+    if ifname.strip("[]") == "lo":
+        return True
+    addr = addr.strip("[]")
+    if addr == "localhost":
+        return True
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return False                      # "*" and anything unexpected: assume reachable
+    if ip.is_loopback:
+        return True
+    mapped = ip.ipv4_mapped if isinstance(ip, ipaddress.IPv6Address) else None
+    return mapped is not None and mapped.is_loopback
+
+
 def listeners(ss_output: str, port: int) -> list[str]:
     """Addresses from `ss -ltn` listening on `port` that Tailscale Serve would hide.
 
-    Loopback-only sockets (127.0.0.0/8, ::1) can't be reached from the tailnet, so they don't
-    conflict; wildcard (0.0.0.0, ::, *), LAN and Tailscale-address binds do.
+    Loopback-only sockets (127.0.0.0/8, ::1, ::ffff:127.x, or bound to `lo`) can't be reached from
+    the tailnet, so they don't conflict; wildcard (0.0.0.0, ::, *), LAN and Tailscale-address binds do.
     """
     found = []
     for line in ss_output.splitlines():
@@ -260,10 +284,7 @@ def listeners(ss_output: str, port: int) -> list[str]:
             continue
         local = cols[3]
         host, _, port_s = local.rpartition(":")
-        if port_s != str(port):
-            continue
-        host = host.strip("[]").split("%", 1)[0]
-        if host.startswith("127.") or host in ("::1", "localhost"):
+        if port_s != str(port) or _loopback_only(host):
             continue
         found.append(local)
     return found
@@ -444,6 +465,9 @@ def main(argv: list[str] | None = None) -> int:
     c = sub.add_parser("branch-tag", help="the image tag CI publishes for a branch name")
     c.add_argument("branch")
 
+    c = sub.add_parser("callback-page", help="the callback.html to host on your Tesla domain (from .env)")
+    c.add_argument("--env", type=Path, default=Path(".env"))
+
     args = p.parse_args(argv)
     try:
         if args.cmd == "ports":
@@ -472,6 +496,10 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if ok else 1
         elif args.cmd == "branch-tag":
             print(branch_tag(args.branch))
+        elif args.cmd == "callback-page":
+            url = (read_env(args.env) or {}).get("RINGHUB_PUBLIC_URL", "")
+            url_port(url, "RINGHUB_PUBLIC_URL")        # must be the https address the phone uses
+            sys.stdout.write(bridge_page(callback_url(url) or ""))
     except PiError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2

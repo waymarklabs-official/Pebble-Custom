@@ -21,8 +21,29 @@ esac
 PORTS="$(pit ports --env .env)"
 read -r RING_PORT NTFY_PORT _ <<<"$PORTS"
 STATUS="$(tailscale serve status --json)"
+HOST="$(tailscale status --self --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip(".").lower())')"
 state() { printf '%s' "$STATUS" | pit serve-state "$1" "$2"; }
 PLAN=("$RING_PORT ringhub http://127.0.0.1:8787 RINGHUB_PUBLIC_URL" "$NTFY_PORT ntfy http://127.0.0.1:2586 NTFY_PUBLIC_URL")
+
+# Refuse a port, with the same advice as preflight.sh: where the service already is if it's
+# published elsewhere, and what else has to follow a changed URL (the running containers and the
+# phone). Changes nothing.
+refuse() {
+  local why="$1" name="$2" target="$3" key="$4" also elsewhere
+  case "$name" in
+    ntfy) also="It must match the server URL in the iPhone ntfy app exactly, so re-add the server there if it changes.";;
+    *) also="If it changes, update the ring app's webhook URLs and your Shortcuts too.";;
+  esac
+  elsewhere="$(printf '%s' "$STATUS" | pit serve-ports "$target")"
+  echo "$why." >&2
+  if [ -n "$elsewhere" ]; then
+    echo "$name is already published on ${elsewhere%% *}: in .env set $key=https://$HOST:${elsewhere%% *}, then: sudo docker compose up -d, and run this again. $also" >&2
+  else
+    echo "Change only $key in .env to a free port (deploy/pi/preflight.sh checks it), then: sudo docker compose up -d, and run this again. Don't regenerate .env: that would replace your secrets. $also" >&2
+  fi
+  echo "Nothing changed." >&2
+  exit 1
+}
 
 echo "Before:"; tailscale serve status || true; echo
 
@@ -44,20 +65,15 @@ else
       free)
         # Loopback-only listeners don't count: the tailnet can't reach them, so nothing is hidden.
         if who="$(ss -ltn 2>/dev/null | pit listeners "$port")"; then
-          echo "port $port is used by a program on this machine ($who); publishing $name there would hide it." >&2
-          echo "Change only $key in .env to a free port (deploy/pi/preflight.sh checks it). Nothing changed." >&2
-          exit 1
+          refuse "port $port is used by a program on this machine ($who); publishing $name there would hide it" \
+            "$name" "$target" "$key"
         fi
         TODO+=("$item");;
       ours) echo ":$port already publishes $name; kept as is";;
       ours-public)
         echo ":$port publishes $name to the PUBLIC internet (Funnel). Run 'sudo bash deploy/pi/serve.sh --off' first. Nothing changed." >&2
         exit 1;;
-      *)
-        echo "tailnet port $port ($key in .env) is used by something else; see 'Before' above." >&2
-        echo "Change only $key in .env to a free port (deploy/pi/preflight.sh checks it, and says where $name already is)." >&2
-        echo "Don't regenerate .env: that would replace your secrets. Nothing changed." >&2
-        exit 1;;
+      *) refuse "tailnet port $port ($key in .env) is used by something else; see 'Before' above" "$name" "$target" "$key";;
     esac
   done
   ADDED=()
@@ -73,6 +89,5 @@ else
 fi
 
 echo; echo "After (your other mappings are unchanged):"; tailscale serve status || true
-HOST="$(tailscale status --self --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip(".").lower())')"
 [ "$MODE" = on ] && { echo; echo "ringhub: https://$HOST:$RING_PORT    ntfy: https://$HOST:$NTFY_PORT"; }
 exit 0

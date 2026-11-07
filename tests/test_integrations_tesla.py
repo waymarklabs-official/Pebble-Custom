@@ -124,6 +124,32 @@ def test_key_script_never_replaces_a_key(tmp_path: Path) -> None:
     assert {f: (d / f).read_bytes() for f in first} == first
 
 
+
+def test_key_script_also_makes_the_callback_page(tmp_path: Path) -> None:
+    """callback.html is needed on the public site before Tesla can be set up, so it comes out of the
+    same step as the public key, made from RINGHUB_PUBLIC_URL in .env."""
+    import shutil
+    import subprocess
+
+    if shutil.which("openssl") is None:
+        pytest.skip("openssl not installed")
+    root = Path(__file__).resolve().parents[1]
+    (tmp_path / "deploy" / "pi").mkdir(parents=True)
+    shutil.copy(root / "deploy" / "pi" / "tesla-keys.sh", tmp_path / "deploy" / "pi")
+    (tmp_path / "src").symlink_to(root / "src")
+    run = lambda: subprocess.run(["bash", str(tmp_path / "deploy/pi/tesla-keys.sh")],  # noqa: E731
+                                 capture_output=True, text=True, timeout=60, check=True).stdout
+    page = tmp_path / "data" / "tesla" / "callback.html"
+    assert "callback.html: not made (no .env here yet)" in run() and not page.exists()
+    (tmp_path / ".env").write_text("RINGHUB_PUBLIC_URL=http://not-https\n")
+    assert "must look like https://" in run() and not page.exists()
+    (tmp_path / ".env").write_text("RINGHUB_PUBLIC_URL=https://tesla-stream.tail51b89d.ts.net:8445\n")
+    out = run()
+    assert "data/tesla/callback.html   ->  callback.html" in out
+    assert 'location.replace("https://tesla-stream.tail51b89d.ts.net:8445/oauth/callback" + q)' in page.read_text()
+    assert oct(page.stat().st_mode & 0o777) == "0o644"
+
+
 # ----------------------------------------------------------------------------- connecting
 
 
@@ -142,12 +168,68 @@ async def test_exchange_code_learns_the_region_and_keeps_the_refresh_token(
     assert rt.tesla is not None and not await rt.tesla.connected()
     route = ntfy.router.post(TESLA_AUTH).mock(return_value=httpx.Response(200, json={
         "access_token": "a1", "refresh_token": "r1", "expires_in": 3600}))
+    ntfy.router.get(f"{SERVERS['eu']}/api/1/users/region").mock(return_value=httpx.Response(200, json={
+        "response": {"region": "eu", "fleet_api_base_url": SERVERS["eu"]}}))
     await rt.tesla.exchange_code("EU_abc123", "https://hub.test/oauth/tesla/callback")
     body = parse_qs(route.calls.last.request.content.decode())
     assert body["grant_type"] == ["authorization_code"] and body["client_secret"] == ["sekret"]
     assert body["audience"] == [SERVERS["eu"]] and body["code"] == ["EU_abc123"]
     assert await rt.store.get(REFRESH_KEY) == "r1" and await rt.store.get(REGION_KEY) == "eu"
     assert await rt.tesla.connected() and await rt.tesla.region() == "eu"
+
+
+async def test_region_comes_from_tesla_not_the_code_prefix(
+        make_runtime: Factory, make_config: Callable[..., Config], ntfy: NtfyMock) -> None:
+    rt: Runtime = await make_runtime(tesla_cfg(make_config, client_secret="s", refresh_token=None, read_url=None))
+    assert rt.tesla is not None
+    ntfy.router.post(TESLA_AUTH).mock(return_value=httpx.Response(200, json={
+        "access_token": "a1", "refresh_token": "r1", "expires_in": 3600}))
+    na = ntfy.router.get(f"{SERVERS['na']}/api/1/users/region").mock(return_value=httpx.Response(421, json={
+        "error": "user out of region"}))
+    eu = ntfy.router.get(f"{SERVERS['eu']}/api/1/users/region").mock(return_value=httpx.Response(200, json={
+        "response": {"region": "eu", "fleet_api_base_url": SERVERS["eu"]}}))
+    await rt.tesla.exchange_code("abc-without-prefix", "https://x/cb")
+    assert na.called and eu.called and await rt.tesla.region() == "eu"
+
+
+async def test_wrong_region_is_followed_once(
+        make_runtime: Factory, make_config: Callable[..., Config], ntfy: NtfyMock, fleet: Fleet) -> None:
+    rt: Runtime = await make_runtime(tesla_cfg(make_config, read_url=None))
+    assert rt.tesla is not None
+    ntfy.router.get(f"{SERVERS['na']}/api/1/vehicles/{TESLA_VIN}").mock(return_value=httpx.Response(421, json={
+        "error": "user out of region"}))
+    ntfy.router.get(f"{SERVERS['na']}/api/1/users/region").mock(return_value=httpx.Response(421))
+    ntfy.router.get(f"{SERVERS['eu']}/api/1/users/region").mock(return_value=httpx.Response(200, json={
+        "response": {"region": "eu"}}))
+    eu_car = ntfy.router.get(f"{SERVERS['eu']}/api/1/vehicles/{TESLA_VIN}").mock(return_value=state("asleep"))
+    assert await rt.tesla.online_state() == "asleep"
+    assert eu_car.called and await rt.tesla.region() == "eu"
+
+
+@pytest.mark.parametrize(("status", "body", "words"), [
+    (402, {"error": "payment required"}, "payment method on your developer account"),
+    (403, {"error": "unauthorized_missing_scopes"}, "Vehicle Information and Vehicle Location scopes"),
+    (404, {"error": "not_found"}, "pick the car again"),
+    (412, {"error": "Account must be registered in the current region"}, "press Register"),
+    (429, {}, "try again in a minute"),
+    (500, {"error": "internal"}, "HTTP 500"),
+])
+async def test_tesla_refusals_are_explained(rt: Runtime, fleet: Fleet, status: int, body: dict[str, Any],
+                                            words: str) -> None:
+    fleet.vehicle.mock(return_value=httpx.Response(status, json=body))
+    assert rt.tesla is not None
+    with pytest.raises(ActionError) as e:
+        await rt.tesla.online_state()
+    assert words in str(e.value)
+    if body.get("error"):
+        assert f"Tesla says: {body['error']}" in str(e.value)
+
+
+async def test_blocked_network_is_explained(rt: Runtime, fleet: Fleet) -> None:
+    fleet.vehicle.side_effect = httpx.ConnectError("Name or service not known")
+    assert rt.tesla is not None
+    with pytest.raises(ActionError, match=r"couldn.t reach tesla\.test from this machine"):
+        await rt.tesla.online_state()
 
 
 async def test_exchange_code_needs_the_client_secret(rt: Runtime) -> None:
@@ -276,6 +358,39 @@ async def test_simple_commands(rt: Runtime, fleet: Fleet, ntfy: NtfyMock, skill:
     assert ntfy.last()["message"] == message
 
 
+async def test_wake_wakes_a_sleeping_car_without_the_proxy(rt: Runtime, fleet: Fleet, ntfy: NtfyMock) -> None:
+    fleet.vehicle.side_effect = [state("asleep"), state("online")]
+    match = (await rt.phrase_index()).match("wake up the car")
+    assert match is not None and match.skill_id == "car_wake"
+    assert await say(rt, "car_wake", ntfy) == {"did": "wake", "was": "asleep"}
+    assert fleet.wake.call_count == 1 and fleet.commands() == []     # Fleet API only: no key, no proxy
+    assert ntfy.last()["message"] == "🚗 The car is awake"
+
+
+async def test_wake_leaves_an_awake_car_alone(rt: Runtime, fleet: Fleet, ntfy: NtfyMock) -> None:
+    assert await say(rt, "car_wake", ntfy) == {"did": "wake", "was": "online"}
+    assert not fleet.wake.called                                    # Tesla bills every wake_up
+    assert ntfy.last()["message"] == "🚗 The car is already awake"
+
+
+async def test_wake_says_when_the_car_does_not_answer(make_runtime: Factory, make_config: Callable[..., Config],
+                                                     fleet: Fleet, ntfy: NtfyMock) -> None:
+    rt: Runtime = await make_runtime(tesla_cfg(make_config, wake_timeout_seconds=0))
+    await ensure_skills(rt.catalog, car_skills())
+    fleet.vehicle.mock(return_value=state("asleep"))
+    with pytest.raises(ActionError, match="did not wake up in time"):
+        await say(rt, "car_wake", ntfy)
+
+
+def test_the_car_template_offers_every_car_action() -> None:
+    from typing import get_args
+
+    from ringhub.actions.car import CarAction
+    from ringhub.templates import CarActionP
+
+    assert get_args(CarActionP.model_fields["action"].annotation) == get_args(CarAction)
+
+
 @pytest.mark.parametrize(("value", "celsius", "said"), [(70, 21.1, "70°F"), (68, 20.0, "68°F"), (21, 21.0, "70°F")])
 async def test_set_temperature_by_voice(rt: Runtime, fleet: Fleet, ntfy: NtfyMock, value: float, celsius: float,
                                         said: str) -> None:
@@ -389,6 +504,7 @@ async def test_car_skills_are_added_once_and_never_overwrite_yours(
 
 @pytest.mark.parametrize(("said", "skill"), [
     ("lock the car", "car_lock"), ("unlock my car", "car_unlock"), ("open the frunk", "frunk"),
+    ("wake the car", "car_wake"),
     ("pop the trunk", "car_trunk"), ("warm up the car", "car_climate"), ("defrost the car", "car_defrost"),
     ("open the garage", "car_garage"), ("find my car", "car_flash"), ("turn on sentry mode", "car_sentry_on"),
     ("vent the windows", "car_vent"), ("how's the car", "car_status"), ("start charging", "car_charge_start"),

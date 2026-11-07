@@ -20,12 +20,12 @@ from starlette.datastructures import UploadFile
 
 from . import __version__
 from .actions.base import ActionError
-from .api import Services, build_router
+from .api import Services, build_router, finish_connect
 from .config import Config
 from .engine import Engine
 from .limits import BodyLimitMiddleware
 from .models import Gesture, RingEvent
-from .oauth import redirect_uri, take_state
+from .oauth import CALLBACK_PATH, take_state
 from .runtime import Runtime
 from .seed import car_skills, ensure_skills, seed_if_empty
 from .store import Store
@@ -200,34 +200,24 @@ def create_app(config: Config) -> FastAPI:
 
     # ------------------------------------------------------------------ OAuth return trip
 
-    @app.get("/oauth/{provider}/callback", response_model=None)
-    async def oauth_callback(provider: str, request: Request, code: str = "", state: str = "",
-                             error: str = "", error_description: str = "") -> Response:
-        """Tesla/Google send the browser back here. The single-use ``state`` (issued by the
-        admin-only connect endpoint) is the authorization; the session cookie isn't sent on this
-        cross-site return (SameSite=Strict)."""
+    @app.get(CALLBACK_PATH, response_model=None)
+    async def oauth_callback(request: Request, code: str = "", state: str = "", error: str = "",
+                             error_description: str = "") -> Response:
+        """Tesla/Google send the browser back here, directly or via the forwarding page on your own
+        domain. The single-use ``state`` (issued by the admin-only connect endpoint) is the
+        authorization and names the provider. The session cookie isn't sent on this cross-site
+        return (SameSite=Strict)."""
         svc: Services = request.app.state.services
-        rt = svc.runtime
-        client = rt.tesla if provider == "tesla" else rt.gcal if provider == "google" else None
-        if client is None:
-            return HTMLResponse(_LINK_PAGE.format(text="Unknown or disabled integration.", form=""), 404)
-        if not await take_state(svc.store, state, provider):
+        provider = await take_state(svc.store, state)
+        if provider is None:
             return HTMLResponse(_LINK_PAGE.format(
                 text="This sign-in link expired or was already used. Start again from Setup → Integrations.",
-                form=""), 400)
+                form=_BACK), 400)
         if error or not code:
             why = html.escape(error_description or error or "no authorization code")
             return HTMLResponse(_LINK_PAGE.format(text=f"Not connected: {why}", form=_BACK), 400)
-        ru = redirect_uri(rt.links.public_url, provider)
-        assert ru is not None   # a state is only issued when public_url is set
         try:
-            await client.exchange_code(code, ru)
-            if provider == "tesla" and rt.tesla is not None:
-                try:
-                    await rt.tesla.select_vehicle()   # the only car on the account, if there's just one
-                except ActionError:
-                    pass                               # several (or none): pick in the dashboard
-                await ensure_skills(rt.catalog, car_skills())
+            await finish_connect(svc, provider, code)
         except ActionError as e:
             return HTMLResponse(_LINK_PAGE.format(text=f"Not connected: {html.escape(str(e))}", form=_BACK), 502)
         return RedirectResponse(f"/#/setup?connected={provider}", status_code=303)
