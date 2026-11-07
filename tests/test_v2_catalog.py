@@ -130,6 +130,7 @@ GOOD_PARAMS: dict[str, dict[str, Any]] = {
     "recall": {"count": 5},
     "notify": {"message": "✋ Hand raised", "topic": "hand-raise", "priority": 4, "tags": ["raised_hand"]},
     "shortcut": {"name": "Lock Car"},
+    "shortcut_email": {"subject": "ring lock car"},
     "webhook": {"url": "https://ha.local/api/webhook/x", "method": "PUT", "headers": {"X": "1"}, "body": {"a": 1}},
     "car_smart": {"unlocked": "frunk", "locked": "nothing"},
     "car_command": {"command": "flash_lights", "params": {}},

@@ -91,6 +91,14 @@ def _shortcut(p: ShortcutP, s: Skill) -> list[dict[str, Any]]:
                                      "url": url, "clear": True}]}}]
 
 
+class ShortcutEmailP(_P):
+    subject: str = Field(min_length=1, max_length=200, pattern=r"^[^\r\n]+$", title="Subject (the command)",
+                         description="Your automation matches it, e.g. “ring lock car 7Q4”. "
+                                     "Add a code word so nobody else's email can trigger it.")
+    to: str | None = Field(None, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$", title="To (optional)",
+                           description="Default: EMAIL_TO from .env.")
+
+
 class CalendarAgendaP(_P):
     day: Literal["today", "tomorrow", "this week", "next"] = Field("today", title="Which events",
                                                                    description="“next” = your next event")
@@ -160,6 +168,11 @@ TEMPLATES: dict[str, TemplateSpec] = {t.id: t for t in [
     TemplateSpec("shortcut", "Run an iPhone Shortcut", "▶️",
                  "Sends a push that runs one of your Shortcuts when you tap it (iOS never runs them unseen). "
                  "E.g. the Tesla app's Lock action.", ShortcutP, _shortcut, needs=("ntfy",), confirm=False),
+    TemplateSpec("shortcut_email", "Run an iPhone Shortcut (hands-free)", "📧",
+                 "Emails a subject your iPhone automation watches for (Automation → Email → Run Immediately), "
+                 "which runs the Shortcut with no tap.", ShortcutEmailP,
+                 lambda p, s: [{"email.send": {"subject": p.subject, **({"to": p.to} if p.to else {})}}],
+                 needs=("email",), confirm=False),
     TemplateSpec("webhook", "Call a webhook", "🔗", "HTTP request to anything: Home Assistant, IFTTT, your Pi.",
                  WebhookP, lambda p, s: [{"http": {"url": p.url, "method": p.method, "headers": p.headers,
                                                    **({"json": p.body} if p.body is not None else {})}}]),

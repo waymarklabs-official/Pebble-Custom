@@ -73,6 +73,10 @@ TZ={tz}
 # Google Calendar (docs/INTEGRATIONS.md): an OAuth client of type "Web application".
 # GOOGLE_CLIENT_ID=
 # GOOGLE_CLIENT_SECRET=
+# Hands-free iPhone Shortcuts by email (docs/INTEGRATIONS.md). Gmail: an App Password, not your password.
+# EMAIL_USERNAME=
+# EMAIL_PASSWORD=
+# EMAIL_TO=
 """
 
 
