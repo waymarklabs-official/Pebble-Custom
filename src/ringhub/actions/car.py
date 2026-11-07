@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from ..runtime import Runtime
 
 CarAction = Literal[
-    "lock", "unlock", "climate_on", "climate_off", "defrost_on", "defrost_off", "set_temp",
+    "wake", "lock", "unlock", "climate_on", "climate_off", "defrost_on", "defrost_off", "set_temp",
     "frunk", "trunk", "honk", "flash", "charge_port_open", "charge_port_close", "charge_start", "charge_stop",
     "charge_limit", "sentry_on", "sentry_off", "vent_windows", "close_windows",
     "seat_heat_on", "seat_heat_off", "wheel_heat_on", "wheel_heat_off", "garage",
@@ -123,6 +123,8 @@ def _command(p: CarCommandParams, value: float | None, state: VehicleState | Non
 async def car_command(p: CarCommandParams, rt: Runtime, v: Vars) -> Vars:
     if rt.tesla is None or rt.vehicle is None:
         raise ActionError("the car integration is off (set TESLA_CLIENT_ID in .env)")
+    if p.action == "wake":
+        return await _wake(rt, v)
     value = _value(p, v)
     near = p.require_near if p.require_near is not None else p.action in NEEDS_NEAR
     state: VehicleState | None = None
@@ -149,6 +151,23 @@ async def car_command(p: CarCommandParams, rt: Runtime, v: Vars) -> Vars:
     rt.vehicle.invalidate()
     await _say(rt, v, said, "normal")
     return {"car": {"did": p.action, "command": command}}
+
+
+async def _wake(rt: Runtime, v: Vars) -> Vars:
+    """Wake the car so the Tesla app, the car's browser or the next command answer at once.
+
+    A Fleet API wake_up, so it needs neither the signing proxy nor the paired key. Tesla bills
+    wake-ups, so an awake car isn't woken again.
+    """
+    assert rt.tesla is not None and rt.vehicle is not None
+    was = await rt.tesla.online_state()
+    if was == "online":
+        await _say(rt, v, "🚗 The car is already awake", "normal")
+    else:
+        await rt.tesla.wake()
+        rt.vehicle.invalidate()
+        await _say(rt, v, "🚗 The car is awake", "normal")
+    return {"car": {"did": "wake", "was": was}}
 
 
 @action("car.status", NoParams)

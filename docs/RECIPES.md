@@ -83,6 +83,26 @@ Voice phrases on the built-in car skills: "warm up the car", "open the frunk". A
  "phrases": ["flash the lights", "where's my car in this lot"]}
 ```
 
+### Wake the car with a press
+**Wake the car** wakes it through Tesla's servers, so the Tesla app, the car's browser or your next
+command answer at once. It doesn't need the signing proxy or the paired key, and it leaves an
+awake car alone (Tesla bills each wake-up). Bind it under **Modes**, e.g. triple-click in
+**Heading out**. Every car command already wakes the car first, so **Lock the car** on a gesture
+locks it too.
+
+### Run one of your iPhone Shortcuts
+iOS never lets an app or a server run a Shortcut without you seeing it. The **Run an iPhone
+Shortcut** template comes closest: the press sends a push, and tapping it runs the Shortcut. For
+example, the Tesla app's **Lock** action, saved as a Shortcut named "Lock Car":
+
+```json
+{"id": "lock_car_shortcut", "name": "Lock Car (Shortcut)", "icon": "▶️", "template": "shortcut",
+ "params": {"name": "Lock Car"}}
+```
+
+The name must match the Shortcuts app exactly. Tap the notification to run it, or expand the
+notification and tap **Run Lock Car**.
+
 ## Work & household
 
 ### Quiet meetings

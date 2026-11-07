@@ -66,6 +66,7 @@ What you get, by ring gesture or voice:
 | Say | Does |
 |---|---|
 | "how's the car" / "car battery" / "is the car locked" | 🔋 78% (241 mi) · locked · 61°F inside. Never wakes the car. |
+| "wake up the car" | Wakes it so the Tesla app and the next command answer at once. Leaves an awake car alone. |
 | "warm up the car" / "start the car" · "stop the car climate" | Climate on / off |
 | "set the car to 70" | Driver and passenger 70°F (or "set the car to 21" for °C) |
 | "defrost the car" | Max defrost |
@@ -198,4 +199,4 @@ From now on, keep `--profile tesla` on `docker compose pull` and `up -d`, or put
 | "registered, but with a different public key" | The hosted file isn't `data/tesla/public-key.pem`. Replace it, then Register again. |
 | "access was revoked or expired" | Connect Tesla again (refresh tokens are single-use, and changing your Tesla password revokes them). |
 | "Not done: I can't tell you're at the car" | Unlock, trunk, vent and garage need a recent location from your phone. Use OwnTracks, or the Shortcuts location automations. |
-| The car is asleep | State reads say so (and never wake it). Commands wake it first, which takes up to ~45 s. |
+| The car is asleep | State reads say so (and never wake it). Commands wake it first, which takes up to ~45 s. Bind **Wake the car** to a gesture to wake it ahead of time. |
