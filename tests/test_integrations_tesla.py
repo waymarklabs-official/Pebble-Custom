@@ -346,7 +346,7 @@ async def say(rt: Runtime, skill: str, ntfy: NtfyMock, **slots: Any) -> dict[str
     ("car_port_open", "charge_port_door_open", {}, "🔌 Charge port open"),
     ("car_charge_stop", "charge_stop", {}, "⚡ Charging stopped"),
     ("car_sentry_on", "set_sentry_mode", {"on": True}, "🛡️ Sentry on"),
-    ("car_seat_heat", "remote_seat_heater_request", {"heater": 0, "level": 3}, "💺 Seat heater on (high)"),
+    ("car_seat_heat", "remote_seat_heater_request", {"seat_position": 0, "level": 3}, "💺 Seat heater on (high)"),
     ("car_wheel_heat", "remote_steering_wheel_heater_request", {"on": True}, "🔥 Steering wheel heater on"),
 ])
 async def test_simple_commands(rt: Runtime, fleet: Fleet, ntfy: NtfyMock, skill: str, command: str,
