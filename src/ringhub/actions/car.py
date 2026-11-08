@@ -96,7 +96,7 @@ def _command(p: CarCommandParams, value: float | None, state: VehicleState | Non
         "close_windows": ("window_control", {"command": "close", **loc}, "🪟 Windows closing"),
         "wheel_heat_on": ("remote_steering_wheel_heater_request", {"on": True}, "🔥 Steering wheel heater on"),
         "wheel_heat_off": ("remote_steering_wheel_heater_request", {"on": False}, "Steering wheel heater off"),
-        "seat_heat_off": ("remote_seat_heater_request", {"heater": 0, "level": 0}, "Seat heater off"),
+        "seat_heat_off": ("remote_seat_heater_request", {"seat_position": 0, "level": 0}, "Seat heater off"),
         "garage": ("trigger_homelink", loc, "🏠 Garage door"),
     }
     if a in simple:
