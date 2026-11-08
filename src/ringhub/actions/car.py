@@ -114,7 +114,7 @@ def _command(p: CarCommandParams, value: float | None, state: VehicleState | Non
         level = int(value) if value is not None else 3
         if not 1 <= level <= 3:
             raise ActionError("seat heat level is 1-3")
-        return ("remote_seat_heater_request", {"heater": 0, "level": level},
+        return ("remote_seat_heater_request", {"seat_position": 0, "level": level},
                 f"💺 Seat heater on ({['', 'low', 'medium', 'high'][level]})")
     raise ActionError(f"unknown car action {a!r}")
 
