@@ -46,6 +46,14 @@ google:                              # Google Calendar; off until GOOGLE_CLIENT_
   calendar_id: ${GOOGLE_CALENDAR_ID:-primary}
   redirect_uri: ${GOOGLE_REDIRECT_URI:-}  # default <public_url>/oauth/callback
 
+email:                               # hands-free iPhone Shortcuts by email; off until EMAIL_USERNAME is set
+  username: ${EMAIL_USERNAME:-}      # SMTP login, e.g. you@gmail.com
+  password: ${EMAIL_PASSWORD:-}      # Gmail: an App Password, never your Google password
+  to: ${EMAIL_TO:-}                  # an iCloud address arrives in seconds; Gmail on iPhone is fetched every 15+ min
+  from_addr: ${EMAIL_FROM:-}         # default: username
+  smtp_host: ${EMAIL_SMTP_HOST:-smtp.gmail.com}
+  smtp_port: ${EMAIL_SMTP_PORT:-465}
+
 # llm:                               # optional: understands reminders the built-in parser misses
 #   api_key: ${ANTHROPIC_API_KEY}
 

@@ -358,6 +358,39 @@ async def test_simple_commands(rt: Runtime, fleet: Fleet, ntfy: NtfyMock, skill:
     assert ntfy.last()["message"] == message
 
 
+async def test_wake_wakes_a_sleeping_car_without_the_proxy(rt: Runtime, fleet: Fleet, ntfy: NtfyMock) -> None:
+    fleet.vehicle.side_effect = [state("asleep"), state("online")]
+    match = (await rt.phrase_index()).match("wake up the car")
+    assert match is not None and match.skill_id == "car_wake"
+    assert await say(rt, "car_wake", ntfy) == {"did": "wake", "was": "asleep"}
+    assert fleet.wake.call_count == 1 and fleet.commands() == []     # Fleet API only: no key, no proxy
+    assert ntfy.last()["message"] == "🚗 The car is awake"
+
+
+async def test_wake_leaves_an_awake_car_alone(rt: Runtime, fleet: Fleet, ntfy: NtfyMock) -> None:
+    assert await say(rt, "car_wake", ntfy) == {"did": "wake", "was": "online"}
+    assert not fleet.wake.called                                    # Tesla bills every wake_up
+    assert ntfy.last()["message"] == "🚗 The car is already awake"
+
+
+async def test_wake_says_when_the_car_does_not_answer(make_runtime: Factory, make_config: Callable[..., Config],
+                                                     fleet: Fleet, ntfy: NtfyMock) -> None:
+    rt: Runtime = await make_runtime(tesla_cfg(make_config, wake_timeout_seconds=0))
+    await ensure_skills(rt.catalog, car_skills())
+    fleet.vehicle.mock(return_value=state("asleep"))
+    with pytest.raises(ActionError, match="did not wake up in time"):
+        await say(rt, "car_wake", ntfy)
+
+
+def test_the_car_template_offers_every_car_action() -> None:
+    from typing import get_args
+
+    from ringhub.actions.car import CarAction
+    from ringhub.templates import CarActionP
+
+    assert get_args(CarActionP.model_fields["action"].annotation) == get_args(CarAction)
+
+
 @pytest.mark.parametrize(("value", "celsius", "said"), [(70, 21.1, "70°F"), (68, 20.0, "68°F"), (21, 21.0, "70°F")])
 async def test_set_temperature_by_voice(rt: Runtime, fleet: Fleet, ntfy: NtfyMock, value: float, celsius: float,
                                         said: str) -> None:
@@ -471,6 +504,7 @@ async def test_car_skills_are_added_once_and_never_overwrite_yours(
 
 @pytest.mark.parametrize(("said", "skill"), [
     ("lock the car", "car_lock"), ("unlock my car", "car_unlock"), ("open the frunk", "frunk"),
+    ("wake the car", "car_wake"),
     ("pop the trunk", "car_trunk"), ("warm up the car", "car_climate"), ("defrost the car", "car_defrost"),
     ("open the garage", "car_garage"), ("find my car", "car_flash"), ("turn on sentry mode", "car_sentry_on"),
     ("vent the windows", "car_vent"), ("how's the car", "car_status"), ("start charging", "car_charge_start"),

@@ -270,6 +270,16 @@ if ! command -v tailscale >/dev/null; then fail "tailscale not installed"; else
           fi;;
       esac
     done
+    # Any other address that points at ringhub or ntfy isn't theirs to keep. An early setup step ran
+    # tailscale serve without naming a port (no --https=), which takes the plain https address
+    # (:443) that another app on the machine may need: on one Pi it was T-Stream's add page.
+    for pair in "ringhub $RING_TARGET $RING_PORT" "ntfy $NTFY_TARGET $NTFY_PORT"; do
+      read -r name target keep <<<"$pair"
+      for port in $(printf '%s' "$STATUS" | pit serve-ports "$target"); do
+        [ "$port" = "$keep" ] && continue
+        warn ":$port also points at $name, which only needs :$keep. If another app used that address, give it back: sudo tailscale serve --https=$port off"
+      done
+    done
   elif [ "$ROOT" = 1 ]; then
     fail "couldn't read tailscale serve status, even as root. Is tailscaled running? sudo tailscale status"
   elif [ -f .env ]; then

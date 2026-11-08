@@ -1,9 +1,9 @@
-# Integrations: Tesla and Google Calendar
+# Integrations: Tesla, Google Calendar and email
 
-Both are optional and turn on from `.env`, and both connect from the dashboard (**Setup →
+All are optional and turn on from `.env`. Tesla and Google connect from the dashboard (**Setup →
 Integrations**). If your `config.yaml` predates them and you never customized it, take a fresh
-copy: `cp config.example.yaml config.yaml` (it has the `tesla:` and `google:` sections, fed from
-`.env`). After changing `.env`, run `docker compose up -d` (with `sudo` if you need it for Docker).
+copy: `cp config.example.yaml config.yaml` (it has the `tesla:`, `google:` and `email:` sections,
+fed from `.env`). After changing `.env`, run `docker compose up -d` (with `sudo` if you need it for Docker).
 
 ---
 
@@ -66,6 +66,7 @@ What you get, by ring gesture or voice:
 | Say | Does |
 |---|---|
 | "how's the car" / "car battery" / "is the car locked" | 🔋 78% (241 mi) · locked · 61°F inside. Never wakes the car. |
+| "wake up the car" | Wakes it so the Tesla app and the next command answer at once. Leaves an awake car alone. |
 | "warm up the car" / "start the car" · "stop the car climate" | Climate on / off |
 | "set the car to 70" | Driver and passenger 70°F (or "set the car to 21" for °C) |
 | "defrost the car" | Max defrost |
@@ -198,4 +199,64 @@ From now on, keep `--profile tesla` on `docker compose pull` and `up -d`, or put
 | "registered, but with a different public key" | The hosted file isn't `data/tesla/public-key.pem`. Replace it, then Register again. |
 | "access was revoked or expired" | Connect Tesla again (refresh tokens are single-use, and changing your Tesla password revokes them). |
 | "Not done: I can't tell you're at the car" | Unlock, trunk, vent and garage need a recent location from your phone. Use OwnTracks, or the Shortcuts location automations. |
-| The car is asleep | State reads say so (and never wake it). Commands wake it first, which takes up to ~45 s. |
+| The car is asleep | State reads say so (and never wake it). Commands wake it first, which takes up to ~45 s. Bind **Wake the car** to a gesture to wake it ahead of time. |
+
+---
+
+## Email: run iPhone Shortcuts hands-free
+
+iOS never lets an app or a server start a Shortcut on its own, with one exception: a personal
+automation can run one, without asking, when an email with a given sender and subject arrives.
+So a ring press can email a command, and your iPhone runs the Shortcut. Use it for things only a
+Shortcut can do, like the Tesla app's own actions.
+
+### 1. Where the email goes
+
+Send it to an **iCloud Mail** address (`@icloud.com`, `@me.com`), set up in the iPhone Mail app.
+iCloud delivers in seconds. A Gmail or Google Workspace inbox in the iPhone Mail app is only
+*fetched*, every 15 minutes at best, which is too slow for a button. The sender can be any account
+you can log in to over SMTP, such as your Gmail.
+
+### 2. An app password for the sender
+
+Gmail and Google Workspace: turn on 2-Step Verification, then make an App Password at
+[myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords). ringhub never
+needs your real Google password. Other providers: use their SMTP host and port, with
+`EMAIL_SMTP_HOST` and `EMAIL_SMTP_PORT`. Port 465 is TLS from the start. Any other port must
+offer STARTTLS, or nothing is sent.
+
+### 3. Turn it on
+
+In `.env`:
+
+```
+EMAIL_USERNAME=you@gmail.com        # the sender's SMTP login
+EMAIL_PASSWORD=abcd efgh ijkl mnop  # the App Password
+EMAIL_TO=you@icloud.com             # the inbox your iPhone watches
+```
+
+Then `docker compose up -d`. `ringhub check` shows `email: on (…)`.
+
+### 4. A skill per command
+
+Dashboard → **Skills** → new → **Run an iPhone Shortcut (hands-free)**. The subject is the
+command, e.g. `ring lock car 7Q4`. Add a code word (`7Q4`) so nobody else's email can trigger it.
+Bind the skill to a gesture under **Modes**.
+
+### 5. The automation (on the iPhone, once per command)
+
+Shortcuts → **Automation** → **+** → **Email**:
+
+- **Sender:** the `EMAIL_USERNAME` (or `EMAIL_FROM`) address
+- **Subject Contains:** the exact subject, e.g. `ring lock car 7Q4`
+- **Account** (or recipient): the iCloud account
+- **Run Immediately** (not "Run After Confirmation"); turn off **Notify When Run** if you like
+
+Tap **Next**, add the action (e.g. the Tesla app's **Lock**), and save. Press the ring to test.
+
+| Symptom | Fix |
+|---|---|
+| "refused the login … App Password" | Use an App Password, not your Google password. 2-Step Verification must be on. |
+| "couldn't reach smtp.gmail.com:465" | The Pi has no internet, or something blocks outbound port 465. |
+| The email arrives, but the Shortcut runs minutes later | The inbox is fetched, not pushed. Send to an iCloud address. |
+| The email arrives, but nothing runs | The automation's sender and subject must match exactly. Check it's set to **Run Immediately**. |

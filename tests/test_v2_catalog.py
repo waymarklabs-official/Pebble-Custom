@@ -129,6 +129,8 @@ GOOD_PARAMS: dict[str, dict[str, Any]] = {
     "list": {},
     "recall": {"count": 5},
     "notify": {"message": "✋ Hand raised", "topic": "hand-raise", "priority": 4, "tags": ["raised_hand"]},
+    "shortcut": {"name": "Lock Car"},
+    "shortcut_email": {"subject": "ring lock car"},
     "webhook": {"url": "https://ha.local/api/webhook/x", "method": "PUT", "headers": {"X": "1"}, "body": {"a": 1}},
     "car_smart": {"unlocked": "frunk", "locked": "nothing"},
     "car_command": {"command": "flash_lights", "params": {}},
@@ -155,6 +157,11 @@ def test_template_outputs() -> None:
     assert steps("moment", {}) == [{"memory.moment": {"label": None}}]
     assert steps("note", {"text": "x"}) == [{"memory.log": {"text": "x"}}]
     assert steps("notify", {"message": "hi"}) == [{"notify": {"message": "hi", "priority": 3}}]
+    run = "shortcuts://run-shortcut?name=Lock%20Car%20%26%20Go"
+    assert steps("shortcut", {"name": "Lock Car & Go"}) == [{"notify": {
+        "message": "Tap to run “Lock Car & Go”", "title": "▶️ Lock Car & Go", "priority": 4, "click": run,
+        "actions": [{"action": "view", "label": "Run Lock Car & Go", "url": run, "clear": True}]}}]
+    assert steps("shortcut", {"name": "x" * 60, "message": "Lock?"})[0]["notify"]["actions"][0]["label"] == "Run it"
     assert steps("webhook", {"url": "http://x"}) == [{"http": {"url": "http://x", "method": "POST", "headers": {}}}]
     assert steps("car_smart", {}) == [{"car.smart": {"unlocked": "trunk", "locked": "precondition"}}]
     assert steps("car_command", {"command": "door_lock"}) == [{"tesla": {"command": "door_lock", "params": {}}}]
@@ -171,7 +178,8 @@ def test_template_outputs() -> None:
     ("notify", {}), ("notify", {"message": "x", "priority": 6}), ("notify", {"message": "x", "topic": "bad topic"}),
     ("webhook", {"url": "ftp://x"}), ("webhook", {"url": "https://x", "method": "TRACE"}),
     ("car_smart", {"unlocked": "sunroof"}), ("car_command", {"command": "Rm -rf"}),
-    ("tv", {"command": "explode"}), ("list", {"extra": 1}), ("moment", {"label": "x" * 81}),
+    ("tv", {"command": "explode"}), ("list", {"extra": 1}),
+    ("shortcut", {}), ("shortcut", {"name": ""}), ("moment", {"label": "x" * 81}),
 ])
 def test_bad_template_params_rejected(template: str, params: dict[str, Any]) -> None:
     with pytest.raises(TemplateError):

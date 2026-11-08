@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
+from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -57,7 +58,7 @@ class WebhookP(_P):
 
 class CarActionP(_P):
     action: Literal[
-        "lock", "unlock", "climate_on", "climate_off", "defrost_on", "defrost_off", "set_temp",
+        "wake", "lock", "unlock", "climate_on", "climate_off", "defrost_on", "defrost_off", "set_temp",
         "frunk", "trunk", "honk", "flash", "charge_port_open", "charge_port_close", "charge_start", "charge_stop",
         "charge_limit", "sentry_on", "sentry_off", "vent_windows", "close_windows",
         "seat_heat_on", "seat_heat_off", "wheel_heat_on", "wheel_heat_off", "garage",
@@ -67,6 +68,35 @@ class CarActionP(_P):
                                             "Or put {value:number} in a phrase, e.g. “set the car to {value:number}”.")
     require_near: bool | None = Field(None, title="Only when I'm at the car",
                                       description="Default: on for unlock, trunk, frunk, vent and garage.")
+
+
+class ShortcutP(_P):
+    name: str = Field(min_length=1, max_length=100, title="Shortcut name",
+                      description="Exactly as it's spelled in the Shortcuts app, e.g. “Lock Car”.")
+    message: str | None = Field(None, max_length=200, title="Notification text (optional)",
+                                description="Default: “Tap to run <name>”.")
+
+
+def shortcut_url(name: str) -> str:
+    return "shortcuts://run-shortcut?name=" + quote(name, safe="")
+
+
+def _shortcut(p: ShortcutP, s: Skill) -> list[dict[str, Any]]:
+    """iOS never lets anything run a Shortcut unseen, so the press sends a push that runs it in one tap."""
+    url = shortcut_url(p.name)
+    label = f"Run {p.name}"
+    return [{"notify": {"message": p.message or f"Tap to run “{p.name}”", "title": f"▶️ {p.name}",
+                        "priority": 4, "click": url,
+                        "actions": [{"action": "view", "label": label if len(label) <= 40 else "Run it",
+                                     "url": url, "clear": True}]}}]
+
+
+class ShortcutEmailP(_P):
+    subject: str = Field(min_length=1, max_length=200, pattern=r"^[^\r\n]+$", title="Subject (the command)",
+                         description="Your automation matches it, e.g. “ring lock car 7Q4”. "
+                                     "Add a code word so nobody else's email can trigger it.")
+    to: str | None = Field(None, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$", title="To (optional)",
+                           description="Default: EMAIL_TO from .env.")
 
 
 class CalendarAgendaP(_P):
@@ -135,6 +165,14 @@ TEMPLATES: dict[str, TemplateSpec] = {t.id: t for t in [
                  "Push a message to any ntfy topic, e.g. \"running late\" to a family topic.",
                  NotifyP, lambda p, s: [{"notify": {k: v for k, v in p.model_dump().items() if v not in (None, [])}}],
                  needs=("ntfy",)),
+    TemplateSpec("shortcut", "Run an iPhone Shortcut", "▶️",
+                 "Sends a push that runs one of your Shortcuts when you tap it (iOS never runs them unseen). "
+                 "E.g. the Tesla app's Lock action.", ShortcutP, _shortcut, needs=("ntfy",), confirm=False),
+    TemplateSpec("shortcut_email", "Run an iPhone Shortcut (hands-free)", "📧",
+                 "Emails a subject your iPhone automation watches for (Automation → Email → Run Immediately), "
+                 "which runs the Shortcut with no tap.", ShortcutEmailP,
+                 lambda p, s: [{"email.send": {"subject": p.subject, **({"to": p.to} if p.to else {})}}],
+                 needs=("email",), confirm=False),
     TemplateSpec("webhook", "Call a webhook", "🔗", "HTTP request to anything: Home Assistant, IFTTT, your Pi.",
                  WebhookP, lambda p, s: [{"http": {"url": p.url, "method": p.method, "headers": p.headers,
                                                    **({"json": p.body} if p.body is not None else {})}}]),
@@ -142,7 +180,7 @@ TEMPLATES: dict[str, TemplateSpec] = {t.id: t for t in [
                  "Unlocked (you're at the car) → open the trunk. Locked/away → start climate.",
                  CarSmartP, lambda p, s: [{"car.smart": {"unlocked": p.unlocked, "locked": p.locked}}],
                  needs=("tesla",), confirm=False),
-    TemplateSpec("car_action", "Car", "🚘", "Lock, climate, temperature, trunk, charging, sentry, windows, "
+    TemplateSpec("car_action", "Car", "🚘", "Wake, lock, climate, temperature, trunk, charging, sentry, windows, "
                  "seat heat, garage door. Unlock/trunk/garage only run when you're at the car.",
                  CarActionP, lambda p, s: [{"car.command": {k: v for k, v in p.model_dump().items()
                                                             if v is not None}}], needs=("tesla",), confirm=False),

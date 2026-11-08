@@ -336,7 +336,7 @@ def build_router(config: Config) -> APIRouter:
             "mode": res.mode.model_dump(mode="json"), "reason": res.reason, "manual": res.manual,
             "gestures": gestures, "context": ctx, "attention": att, "reminders": upcoming, "notes": recent,
             "vehicle": vehicle, "features": {"tesla": rt.tesla is not None, "google": rt.gcal is not None,
-                                             "ntfy": rt.notifier.enabled,
+                                             "ntfy": rt.notifier.enabled, "email": svc.config.email is not None,
                                              "llm": rt.llm is not None, "tv": bool(svc.config.devices),
                                              "links": rt.links.public_url is not None},
         }
