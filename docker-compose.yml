@@ -43,7 +43,7 @@ services:
 
   ntfy:
     # Pinned by version and digest (Dependabot proposes updates); read the release notes before bumping.
-    image: binwiederhier/ntfy:v2.37.2@sha256:1875ddcf815c8a3c981d6d78c67a93452d0abba79b1ab9520b1f5f5238902bd7
+    image: binwiederhier/ntfy:v2.38.2@sha256:ca35419d29a834824db2440fa9320897fbe40b026c5fc2360c76ed3501b5e716
     command: ["serve"]
     restart: unless-stopped
     init: true
